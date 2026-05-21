@@ -22,7 +22,7 @@ export default function Page0001() {
       footerRight="Page 1"
     >
       <h1 className="font-display text-[24px] font-semibold tracking-[-0.005em] mt-2 mb-3 text-ink">
-        2. 設定
+        1. 設定
       </h1>
       <p className="mb-5 text-ink leading-relaxed">
         本章描述範例設定檔的格式。每一筆設定都遵循同樣的結構：模式名稱、宣告的型別、
@@ -30,7 +30,7 @@ export default function Page0001() {
       </p>
 
       <h2 className="font-display text-[15px] font-semibold mt-6 mb-3 text-ink uppercase tracking-[0.06em]">
-        2.1　模式對照表
+        1.1　模式對照表
       </h2>
 
       <div className="overflow-x-auto mb-6">
@@ -78,7 +78,7 @@ export default function Page0001() {
       </div>
 
       <h2 className="font-display text-[15px] font-semibold mt-6 mb-3 text-ink uppercase tracking-[0.06em]">
-        2.2　範例程式
+        1.2　範例程式
       </h2>
       <p className="mb-3 text-ink leading-relaxed">
         以下範例展示如何用
@@ -96,7 +96,7 @@ export default function Page0001() {
       </pre>
 
       <h2 className="font-display text-[15px] font-semibold mt-6 mb-3 text-ink uppercase tracking-[0.06em]">
-        2.3　注意事項
+        1.3　注意事項
       </h2>
 
       <blockquote
