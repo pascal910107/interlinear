@@ -1,5 +1,6 @@
-# Local-only design notes — not shipped
-docs/
+# Local-only design notes — not shipped. Anchored to repo root so it
+# doesn't accidentally catch app-level docs/ folders (see below).
+/docs/
 HANDOFF.md
 .notes/
 
@@ -7,11 +8,14 @@ HANDOFF.md
 # See docs/spike-postmortem.md for what it proved.
 spike/
 
-# Real translation workspaces — one folder per PDF you're post-editing.
-# These hold user content (pages, original-page PNGs, per-PDF config) and
-# never go to git. The framework's own apps/demo/ is the only sample that
-# ships.
-workspaces/
+# Real translation docs — one folder per PDF you're post-editing under
+# apps/demo/docs/. These hold user content (pages, original-page PNGs,
+# per-PDF config) and never go to git. The framework's own
+# apps/demo/docs/example/ is the only sample that ships.
+apps/demo/docs/*/
+!apps/demo/docs/example/
+# Even the example doc's dev-state lives outside git.
+apps/demo/docs/*/.interlinear/
 
 # Locally-installed developer skills (e.g. frontend-design installed via
 # `npx skills add`). Not part of the framework. The framework's own
@@ -19,6 +23,10 @@ workspaces/
 # template/.agents/skills/.
 .agents/
 skills-lock.json
+
+# Local Claude Code workspace — symlinks into packages/core/skills/* and
+# per-machine settings. Not part of the framework.
+.claude/
 
 # Dependencies
 node_modules/
@@ -37,3 +45,9 @@ build/
 # Local env
 .env
 .env.local
+
+# DocChat conversation log — per-workspace ask-the-document transcript.
+# Lives at <userCwd>/.interlinear/conversation.json. Never goes to git
+# because (a) it can include user questions about non-public material
+# and (b) the demo's transcript is unrelated to the framework's release.
+.interlinear/

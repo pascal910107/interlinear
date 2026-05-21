@@ -18,6 +18,7 @@ export default defineConfig({
     'vite',
     '@babel/parser',
     '@babel/types',
+    'bundle-require',
     'fast-glob',
     /^virtual:/,
   ],

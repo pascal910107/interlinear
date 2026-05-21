@@ -1,160 +1,264 @@
-import { existsSync } from 'node:fs';
+import { createReadStream, existsSync } from 'node:fs';
 import path from 'node:path';
 import fg from 'fast-glob';
 import type { Plugin, ViteDevServer } from 'vite';
-import type { DocMeta, InterlinearConfig } from '../config';
+import type { InterlinearConfig } from '../config';
 
 export type InterlinearPluginOptions = {
-  /** Absolute path of the user workspace (the dir holding pages/, interlinear.config.ts). */
+  /** Workspace root (the app folder that holds the docs/ directory). */
   userCwd: string;
-  /** Resolved config. The demo's vite.config.ts imports its interlinear.config.ts and passes it through. */
-  config: InterlinearConfig;
-  /** Subset of config exposed as the "document" identity (title/sourcePdf/locale). */
-  meta?: DocMeta;
+  /** Folder containing per-doc subfolders. Defaults to "docs". */
+  docsDir?: string;
+  /** Default pagesDir inside each doc. Defaults to "pages". */
+  pagesDir?: string;
 };
 
-const PAGES_VMOD = 'virtual:interlinear/pages';
-const CONFIG_VMOD = 'virtual:interlinear/config';
-const META_VMOD = 'virtual:interlinear/meta';
+const DOCS_VMOD = 'virtual:interlinear/docs';
 
 function resolved(id: string): string {
   return `\0${id}`;
 }
 
-async function findPages(pagesRoot: string): Promise<string[]> {
-  if (!existsSync(pagesRoot)) return [];
-  const hits = await fg('*/index.{tsx,jsx,ts,js}', {
-    cwd: pagesRoot,
-    absolute: true,
-    onlyFiles: true,
+type DocPage = { id: string; abs: string; rel: string };
+
+type Doc = {
+  id: string;
+  dir: string;
+  config: InterlinearConfig;
+  pagesRoot: string;
+  pages: DocPage[];
+};
+
+async function loadDocConfig(dir: string): Promise<InterlinearConfig | null> {
+  const candidates = ['interlinear.config.ts', 'interlinear.config.js'];
+  for (const c of candidates) {
+    const fp = path.resolve(dir, c);
+    if (!existsSync(fp)) continue;
+    try {
+      const mod = await import('bundle-require');
+      const { mod: loaded } = await mod.bundleRequire({ filepath: fp });
+      return (loaded as { default?: InterlinearConfig }).default ?? (loaded as InterlinearConfig);
+    } catch (e) {
+      console.warn(`[interlinear] failed to load ${fp}:`, e);
+    }
+  }
+  return null;
+}
+
+async function findDocs(docsRoot: string, pagesDir: string): Promise<Doc[]> {
+  if (!existsSync(docsRoot)) return [];
+  const entries = await fg('*', {
+    cwd: docsRoot,
+    onlyDirectories: true,
+    dot: false,
   });
-  return hits.sort();
+  const out: Doc[] = [];
+  for (const id of entries.sort()) {
+    const dir = path.resolve(docsRoot, id);
+    const config = (await loadDocConfig(dir)) ?? { title: id };
+    const docPagesDir = config.pagesDir ?? pagesDir;
+    const pagesRoot = path.resolve(dir, docPagesDir);
+    const hits = existsSync(pagesRoot)
+      ? await fg('*/index.{tsx,jsx,ts,js}', {
+          cwd: pagesRoot,
+          absolute: true,
+          onlyFiles: true,
+        })
+      : [];
+    hits.sort();
+    const pages: DocPage[] = hits.map((abs) => ({
+      id: path.relative(pagesRoot, abs).split(path.sep)[0],
+      abs,
+      rel: path.relative(docsRoot, abs),
+    }));
+    out.push({ id, dir, config, pagesRoot, pages });
+  }
+  return out;
 }
 
-function toPageId(absFile: string, pagesRoot: string): string {
-  return path.relative(pagesRoot, absFile).split(path.sep)[0];
-}
-
-function isPageEntry(absPath: string, pagesRoot: string): string | null {
-  const rel = path.relative(pagesRoot, absPath);
+function isPageEntry(
+  absPath: string,
+  docsRoot: string,
+  pagesDir: string,
+): { docId: string; pageId: string } | null {
+  const rel = path.relative(docsRoot, absPath);
   if (rel.startsWith('..') || path.isAbsolute(rel)) return null;
   const parts = rel.split(path.sep);
-  if (parts.length !== 2) return null;
-  if (!/^index\.(tsx|jsx|ts|js)$/.test(parts[1])) return null;
-  return parts[0];
+  // <docId>/<pagesDir>/<pageId>/index.<ext>
+  if (parts.length !== 4) return null;
+  if (parts[1] !== pagesDir) return null;
+  if (!/^index\.(tsx|jsx|ts|js)$/.test(parts[3])) return null;
+  return { docId: parts[0], pageId: parts[2] };
 }
 
-async function generatePagesModule(
-  files: string[],
-  pagesRoot: string,
-  userCwd: string,
-  isDev: boolean,
-): Promise<string> {
-  const entries = files.map((abs) => ({
-    id: toPageId(abs, pagesRoot),
-    abs,
-    relToCwd: path.relative(userCwd, abs),
-  }));
+function sanitizeIdent(s: string): string {
+  return s.replace(/[^a-zA-Z0-9_]/g, '_');
+}
 
-  const ids = JSON.stringify(entries.map((e) => e.id));
-  const pageFiles = JSON.stringify(Object.fromEntries(entries.map((e) => [e.id, e.relToCwd])));
-
-  // In dev, use /@fs/ absolute imports so Vite can serve files outside its root.
-  // In build, use the absolute path directly — Rollup resolves it via the file system.
-  const cases = entries
-    .map((e) => {
-      const importPath = isDev ? `/@fs/${e.abs.replace(/^\/+/, '')}` : e.abs;
-      return `    case ${JSON.stringify(e.id)}: return import(${JSON.stringify(importPath)});`;
-    })
-    .join('\n');
-
-  return `// virtual:interlinear/pages — generated
-export const pageIds = ${ids};
-export const pageFiles = ${pageFiles};
-
-export async function loadPage(id) {
-  switch (id) {
-${cases}
-    default: throw new Error('Page not found: ' + id);
+function generateDocsModule(docs: Doc[], isDev: boolean): string {
+  const out: string[] = [];
+  out.push(`// virtual:interlinear/docs — generated`);
+  for (const doc of docs) {
+    const loaderName = `loadDoc_${sanitizeIdent(doc.id)}`;
+    const cases = doc.pages
+      .map((p) => {
+        const importPath = isDev ? `/@fs/${p.abs.replace(/^\/+/, '')}` : p.abs;
+        return `      case ${JSON.stringify(p.id)}: return import(${JSON.stringify(importPath)});`;
+      })
+      .join('\n');
+    out.push(`async function ${loaderName}(id) {`);
+    out.push(`  switch (id) {`);
+    if (cases) out.push(cases);
+    out.push(`    default: throw new Error('Page not found in ${doc.id}: ' + id);`);
+    out.push(`  }`);
+    out.push(`}`);
   }
+  out.push(`export const docs = [`);
+  for (const doc of docs) {
+    const loaderName = `loadDoc_${sanitizeIdent(doc.id)}`;
+    const pageFiles = Object.fromEntries(doc.pages.map((p) => [p.id, p.rel]));
+    out.push(`  {`);
+    out.push(`    id: ${JSON.stringify(doc.id)},`);
+    out.push(`    title: ${JSON.stringify(doc.config.title ?? doc.id)},`);
+    out.push(`    locale: ${JSON.stringify(doc.config.locale ?? null)},`);
+    out.push(`    sourcePdf: ${JSON.stringify(doc.config.sourcePdf ?? null)},`);
+    out.push(`    pageIds: ${JSON.stringify(doc.pages.map((p) => p.id))},`);
+    out.push(`    pageFiles: ${JSON.stringify(pageFiles)},`);
+    out.push(`    loadPage: ${loaderName},`);
+    out.push(`  },`);
+  }
+  out.push(`];`);
+  out.push('');
+  return out.join('\n');
 }
-`;
-}
+
+const STATIC_EXTS = new Set([
+  '.png',
+  '.jpg',
+  '.jpeg',
+  '.gif',
+  '.svg',
+  '.webp',
+  '.pdf',
+]);
+
+const MIME: Record<string, string> = {
+  '.png': 'image/png',
+  '.jpg': 'image/jpeg',
+  '.jpeg': 'image/jpeg',
+  '.gif': 'image/gif',
+  '.svg': 'image/svg+xml',
+  '.webp': 'image/webp',
+  '.pdf': 'application/pdf',
+};
 
 export function interlinearPlugin(opts: InterlinearPluginOptions): Plugin {
   const userCwd = path.resolve(opts.userCwd);
-  const pagesDir = opts.config.pagesDir ?? 'pages';
-  const pagesRoot = path.resolve(userCwd, pagesDir);
-
-  const meta: DocMeta = opts.meta ?? {
-    title: opts.config.title,
-    sourcePdf: opts.config.sourcePdf,
-    locale: opts.config.locale,
-  };
+  const docsDir = opts.docsDir ?? 'docs';
+  const docsRoot = path.resolve(userCwd, docsDir);
+  const pagesDir = opts.pagesDir ?? 'pages';
 
   let isDev = false;
+  let docIdsCache = new Set<string>();
+
+  async function refreshDocIds(): Promise<void> {
+    if (!existsSync(docsRoot)) {
+      docIdsCache = new Set();
+      return;
+    }
+    const entries = await fg('*', {
+      cwd: docsRoot,
+      onlyDirectories: true,
+      dot: false,
+    });
+    docIdsCache = new Set(entries);
+  }
 
   return {
     name: 'interlinear',
     config(_c, env) {
       isDev = env.command === 'serve';
       return {
-        server: { fs: { allow: [userCwd] } },
+        server: { fs: { allow: [userCwd, docsRoot] } },
       };
     },
     resolveId(id) {
-      if (id === PAGES_VMOD) return resolved(PAGES_VMOD);
-      if (id === CONFIG_VMOD) return resolved(CONFIG_VMOD);
-      if (id === META_VMOD) return resolved(META_VMOD);
+      if (id === DOCS_VMOD) return resolved(DOCS_VMOD);
       return null;
     },
     async load(id) {
-      if (id === resolved(PAGES_VMOD)) {
-        const files = await findPages(pagesRoot);
-        return await generatePagesModule(files, pagesRoot, userCwd, isDev);
-      }
-      if (id === resolved(CONFIG_VMOD)) {
-        return `export default ${JSON.stringify(opts.config)};\n`;
-      }
-      if (id === resolved(META_VMOD)) {
-        return `export default ${JSON.stringify(meta)};\n`;
+      if (id === resolved(DOCS_VMOD)) {
+        const docs = await findDocs(docsRoot, pagesDir);
+        docIdsCache = new Set(docs.map((d) => d.id));
+        return generateDocsModule(docs, isDev);
       }
       return null;
     },
     handleHotUpdate(ctx) {
-      const pageId = isPageEntry(ctx.file, pagesRoot);
-      if (!pageId) return;
-      // Notify the client so it can refresh per-page UI without a full reload.
+      const hit = isPageEntry(ctx.file, docsRoot, pagesDir);
+      if (!hit) return;
       ctx.server.ws.send({
         type: 'custom',
         event: 'interlinear:page-changed',
-        data: { pageId },
+        data: hit,
       });
-      // Don't short-circuit React Fast Refresh — return undefined to let Vite's
-      // default HMR continue handling the JS module update.
       return;
     },
     configureServer(server: ViteDevServer) {
-      // Vite already watches userCwd if it's the root, but be explicit so
-      // moving the plugin to a non-root config still works.
-      if (existsSync(pagesRoot)) server.watcher.add(pagesRoot);
+      refreshDocIds().catch(() => {});
+
+      // Serve per-doc static assets at /<docId>/<...>, looking in
+      // <docsRoot>/<docId>/public/<rest> first, then <docsRoot>/<docId>/<rest>.
+      server.middlewares.use((req, res, next) => {
+        const u = (req.url ?? '').split('?')[0] ?? '';
+        const m = /^\/([^/]+)\/(.+)$/.exec(u);
+        if (!m) return next();
+        const [, docId, rest] = m;
+        if (!docIdsCache.has(docId)) return next();
+        const ext = path.extname(rest).toLowerCase();
+        if (!STATIC_EXTS.has(ext)) return next();
+        const docDir = path.resolve(docsRoot, docId);
+        const candidates = [
+          path.resolve(docDir, 'public', rest),
+          path.resolve(docDir, rest),
+        ];
+        for (const candidate of candidates) {
+          if (!candidate.startsWith(docDir)) continue;
+          if (!existsSync(candidate)) continue;
+          res.setHeader('content-type', MIME[ext] ?? 'application/octet-stream');
+          createReadStream(candidate).pipe(res);
+          return;
+        }
+        return next();
+      });
+
+      if (existsSync(docsRoot)) server.watcher.add(docsRoot);
 
       let reloadTimer: ReturnType<typeof setTimeout> | null = null;
       const reload = () => {
         if (reloadTimer) clearTimeout(reloadTimer);
-        reloadTimer = setTimeout(() => {
+        reloadTimer = setTimeout(async () => {
           reloadTimer = null;
-          const mod = server.moduleGraph.getModuleById(resolved(PAGES_VMOD));
+          await refreshDocIds();
+          const mod = server.moduleGraph.getModuleById(resolved(DOCS_VMOD));
           if (mod) server.moduleGraph.invalidateModule(mod);
           server.ws.send({ type: 'full-reload' });
         }, 100);
       };
 
       server.watcher.on('add', (p) => {
-        if (isPageEntry(p, pagesRoot)) reload();
+        if (isPageEntry(p, docsRoot, pagesDir)) reload();
       });
       server.watcher.on('unlink', (p) => {
-        if (isPageEntry(p, pagesRoot)) reload();
+        if (isPageEntry(p, docsRoot, pagesDir)) reload();
+      });
+      server.watcher.on('change', (p) => {
+        if (
+          path.basename(p) === 'interlinear.config.ts' &&
+          p.startsWith(docsRoot)
+        ) {
+          reload();
+        }
       });
     },
   };

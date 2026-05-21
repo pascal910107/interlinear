@@ -14,6 +14,10 @@ persisted as an in-source JSX marker inside the targeted
 Your job: read those markers, apply the described edits to the translated
 JSX, and delete the markers.
 
+> Document-level questions (e.g. *"strict 跟 quiet 有什麼差別？"*) are a
+> different flow — those live in `.interlinear/conversation.json` and are
+> handled by `/ask-doc`, not this skill.
+
 ## Marker format
 
 ```
@@ -32,12 +36,12 @@ JSX, and delete the markers.
 ## Procedure
 
 1. **Scan for markers.**
-   - Glob `pages/**/index.tsx` from the user workspace (typically
-     `apps/<appName>/pages/**/index.tsx` in a monorepo, or just
-     `pages/**/index.tsx` in a single-package layout).
+   - Glob `apps/demo/docs/*/pages/**/index.tsx`. If the user named a
+     specific doc ("apply comments on example-mcu-sdg"), narrow the glob
+     to `apps/demo/docs/<docId>/pages/**/index.tsx`.
    - Apply the regex per file. For every match, base64url-decode `text` and
      `JSON.parse` it to get `{ note, hint? }`.
-   - Record each as `{ file, id, lineIndex (0-based), note, hint }`.
+   - Record each as `{ file, docId, id, lineIndex (0-based), note, hint }`.
    - If no markers exist, tell the user and stop.
 
 2. **Understand each comment in context.**
@@ -65,8 +69,8 @@ JSX, and delete the markers.
 5. **Verify.**
    - After all edits, re-read each touched file and confirm zero remaining
      markers.
-   - Run `pnpm typecheck` from the workspace root to confirm the touched
-     pages still type-check.
+   - Run `pnpm typecheck` from the repo root to confirm the touched pages
+     still type-check.
 
 6. **Report.**
    - Summarise: `N applied, 0 remaining` plus one line per change
@@ -104,6 +108,6 @@ the user rather than fanning the comment out manually. For now,
 ## Do not
 
 - Do not touch `package.json`, `vite.config.ts`, anything under
-  `packages/core/src/vite/`, or anything outside `pages/`.
+  `packages/core/src/vite/`, or anything outside `apps/demo/docs/*/pages/`.
 - Do not add dependencies.
 - Do not re-introduce markers or leave `TODO` breadcrumbs in the code.

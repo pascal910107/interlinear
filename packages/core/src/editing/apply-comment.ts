@@ -122,9 +122,12 @@ function findInsertion(source: string, line: number, column: number): InsertionP
 
 // --- The Vite plugin ---
 
-export type ApplyCommentOptions = { root: string };
+export type ApplyCommentOptions = {
+  /** Root containing all docs. `file` paths are relative to this. */
+  docsRoot: string;
+};
 
-export function applyCommentEndpoint({ root }: ApplyCommentOptions): Plugin {
+export function applyCommentEndpoint({ docsRoot }: ApplyCommentOptions): Plugin {
   return {
     name: 'interlinear-apply-comment',
     configureServer(server) {
@@ -148,11 +151,10 @@ export function applyCommentEndpoint({ root }: ApplyCommentOptions): Plugin {
               hint?: string;
             };
 
-            // Resolve safely under root only.
-            const target = resolve(root, file);
-            if (!target.startsWith(`${root}/`) && target !== root) {
+            const target = resolve(docsRoot, file);
+            if (!target.startsWith(`${docsRoot}/`) && target !== docsRoot) {
               res.statusCode = 400;
-              res.end(JSON.stringify({ ok: false, error: 'path escapes project root' }));
+              res.end(JSON.stringify({ ok: false, error: 'path escapes docs root' }));
               return;
             }
 

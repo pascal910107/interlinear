@@ -1,12 +1,18 @@
-import type { InterlinearConfig } from '@interlinear/core/config';
+/** Workspace-level interlinear config. Per-doc config (title, sourcePdf,
+ * locale) lives at `docs/<docId>/interlinear.config.ts`. */
+export type WorkspaceConfig = {
+  /** Folder containing per-doc subdirectories. Defaults to "docs". */
+  docsDir?: string;
+  /** Default pagesDir inside each doc. Defaults to "pages". */
+  pagesDir?: string;
+  /** Dev server port. */
+  port?: number;
+};
 
-const config: InterlinearConfig = {
-  title: 'Example Doc',
-  // sourcePdf is intentionally a placeholder. A real workspace pointing
-  // at an actual PDF should live in a gitignored ./workspaces/<name>/
-  // folder with its own interlinear.config.ts.
-  sourcePdf: './source.pdf',
-  locale: 'zh-Hant',
+const config: WorkspaceConfig = {
+  docsDir: 'docs',
+  pagesDir: 'pages',
+  port: 5173,
 };
 
 export default config;

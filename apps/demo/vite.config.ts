@@ -10,38 +10,47 @@ import {
   applyCommentEndpoint,
   applyEditEndpoint,
   commentsApiEndpoint,
+  searchApiEndpoint,
+  docQaApiEndpoint,
 } from '@interlinear/core/vite';
 
 import config from './interlinear.config';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const projectRoot = resolve(__dirname);
+const docsRoot = resolve(projectRoot, config.docsDir ?? 'docs');
 
 // Dev-only pieces (injectSourceAttrs adds inspector hooks to JSX; the
-// __apply_* / __list_comments endpoints back the inspector via the dev
-// server). Production builds ship a static reader — none of these are
-// useful or even functional once the dev server is gone.
+// __apply_* / __list_comments / __search / __doc_qa endpoints back the
+// inspector, search bar, and DocChat via the dev server). Production
+// builds ship a static reader — none of these are useful then.
 export default defineConfig(({ command }) => {
   const isDev = command === 'serve';
   return {
     plugins: [
       react({
         babel: {
-          plugins: isDev ? [[injectSourceAttrs, { root: projectRoot }]] : [],
+          plugins: isDev ? [[injectSourceAttrs, { root: docsRoot }]] : [],
         },
       }),
       tailwindcss(),
-      interlinearPlugin({ userCwd: projectRoot, config }),
+      interlinearPlugin({
+        userCwd: projectRoot,
+        docsDir: config.docsDir,
+        pagesDir: config.pagesDir,
+      }),
       ...(isDev
         ? [
-            applyCommentEndpoint({ root: projectRoot }),
-            applyEditEndpoint({ root: projectRoot }),
-            commentsApiEndpoint({ root: projectRoot }),
+            applyCommentEndpoint({ docsRoot }),
+            applyEditEndpoint({ docsRoot }),
+            commentsApiEndpoint({ docsRoot }),
+            searchApiEndpoint({ docsRoot, pagesDir: config.pagesDir }),
+            docQaApiEndpoint({ docsRoot }),
           ]
         : []),
     ],
     server: {
-      port: 5173,
+      port: config.port ?? 5173,
     },
   };
 });

@@ -7,3 +7,7 @@ export { applyEditEndpoint } from '../editing/apply-edit';
 export type { ApplyEditOptions } from '../editing/apply-edit';
 export { commentsApiEndpoint } from '../editing/comments-api';
 export type { CommentsApiOptions } from '../editing/comments-api';
+export { searchApiEndpoint } from '../editing/search-api';
+export type { SearchApiOptions } from '../editing/search-api';
+export { docQaApiEndpoint } from '../editing/doc-qa-api';
+export type { DocQaApiOptions } from '../editing/doc-qa-api';

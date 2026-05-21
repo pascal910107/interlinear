@@ -1,20 +1,16 @@
 /// <reference types="vite/client" />
 
-declare module 'virtual:interlinear/pages' {
+declare module 'virtual:interlinear/docs' {
   import type { ComponentType } from 'react';
-  export const pageIds: string[];
-  export const pageFiles: Record<string, string>;
-  export function loadPage(id: string): Promise<{ default: ComponentType }>;
-}
-
-declare module 'virtual:interlinear/config' {
-  import type { InterlinearConfig } from '@interlinear/core/config';
-  const config: InterlinearConfig;
-  export default config;
-}
-
-declare module 'virtual:interlinear/meta' {
-  import type { DocMeta } from '@interlinear/core/config';
-  const meta: DocMeta;
-  export default meta;
+  export type InterlinearDoc = {
+    id: string;
+    title: string;
+    locale: string | null;
+    sourcePdf: string | null;
+    pageIds: string[];
+    /** pageId -> path relative to the workspace's docs/ directory. */
+    pageFiles: Record<string, string>;
+    loadPage(id: string): Promise<{ default: ComponentType }>;
+  };
+  export const docs: InterlinearDoc[];
 }

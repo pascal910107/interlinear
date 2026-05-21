@@ -1,6 +1,6 @@
 /// <reference path="../vite/client.d.ts" />
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
-import { pageFiles } from 'virtual:interlinear/pages';
+import { useDoc } from './DocContext';
 
 type Identity = { file: string; line: number; col: number };
 
@@ -36,9 +36,6 @@ function readAttrs(el: HTMLElement, fileSet: Set<string>): Identity | null {
 }
 
 function readEditableText(el: HTMLElement): string | null {
-  // Authoritative answer comes from the babel injector: it sets
-  // data-src-editable="true" only when the source JSXElement has exactly one
-  // JSXText child, which matches apply-edit.ts's acceptance predicate.
   if (el.getAttribute('data-src-editable') !== 'true') return null;
   return el.textContent ?? '';
 }
@@ -73,23 +70,18 @@ function sameIdentity(a: Identity | null, b: Identity | null): boolean {
   return a.file === b.file && a.line === b.line && a.col === b.col;
 }
 
-function currentHashPageId(): string | null {
-  const h = window.location.hash;
-  const m = /^#\/([^/?]+)/.exec(h);
-  return m ? m[1] : null;
-}
-
 export function Inspector() {
-  // Build a stable map/set of valid (pageId → file) pairs from the virtual
-  // module. Used both to filter inspectable elements (any file in the set is
-  // fair game) and to fetch comments page-by-page.
+  const doc = useDoc();
+  const { pageFiles, currentPageId, id: docId } = doc;
+
+  // Build a stable map/set of valid (pageId → file) pairs from the doc.
   const fileToPageId = useMemo(() => {
     const out = new Map<string, string>();
     for (const [pageId, file] of Object.entries(pageFiles)) out.set(file, pageId);
     return out;
-  }, []);
+  }, [pageFiles]);
   const fileSet = useMemo(() => new Set(fileToPageId.keys()), [fileToPageId]);
-  const pageEntries = useMemo(() => Object.entries(pageFiles), []);
+  const pageEntries = useMemo(() => Object.entries(pageFiles), [pageFiles]);
 
   const [hoverAnchor, setHoverAnchor] = useState<Anchor | null>(null);
   const [hoverRect, setHoverRect] = useState<DOMRect | null>(null);
@@ -107,16 +99,12 @@ export function Inspector() {
   const textRef = useRef<HTMLTextAreaElement>(null);
   const badgeRef = useRef<HTMLDivElement>(null);
 
-  // Fetch comments for every known page in parallel and merge. Tag each
-  // comment with its source file/pageId so cross-page Goto can navigate.
   const refreshComments = useCallback(async () => {
     try {
       const batches = await Promise.all(
         pageEntries.map(async ([pageId, file]) => {
           try {
-            const res = await fetch(
-              `/__list_comments?file=${encodeURIComponent(file)}`,
-            );
+            const res = await fetch(`/__list_comments?file=${encodeURIComponent(file)}`);
             const data = (await res.json()) as {
               ok: boolean;
               comments?: Omit<PageComment, 'file' | 'pageId'>[];
@@ -134,14 +122,20 @@ export function Inspector() {
     }
   }, [pageEntries]);
 
+  // Reset state on doc change so we don't carry hover/selection across docs.
+  useEffect(() => {
+    setHoverAnchor(null);
+    setHoverRect(null);
+    setSelected(null);
+    setSelectedRect(null);
+    setPageComments([]);
+  }, [docId]);
+
   useEffect(() => {
     refreshComments();
     const hot = import.meta.hot;
     const onHmr = () => refreshComments();
     hot?.on('vite:afterUpdate', onHmr);
-    // Plugin emits this when a pages/*/index.tsx file changes; useful when
-    // the change is to a non-rendered page (HMR won't fire vite:afterUpdate
-    // because the module is not in the active dependency graph).
     hot?.on('interlinear:page-changed', onHmr);
     return () => {
       hot?.off('vite:afterUpdate', onHmr);
@@ -149,7 +143,6 @@ export function Inspector() {
     };
   }, [refreshComments]);
 
-  // Close badge dropdown on outside click.
   useEffect(() => {
     if (!commentsOpen) return;
     function onDown(e: MouseEvent) {
@@ -180,13 +173,9 @@ export function Inspector() {
     }
   }
 
-  // Navigate (if needed) to the comment's page, then scroll the target into
-  // view and select it. Cross-page navigation uses the hash route the demo
-  // wires up; after the route changes, we retry the lookup a few times to
-  // give Suspense time to mount the new page.
   function gotoComment(c: PageComment) {
     setCommentsOpen(false);
-    const onCurrentPage = currentHashPageId() === c.pageId || pageEntries.length === 1;
+    const onCurrentPage = currentPageId === c.pageId || pageEntries.length === 1;
     const finish = (attempt = 0): void => {
       if (c.elementLine == null || c.elementCol == null) return;
       const el = findByIdentity({
@@ -210,14 +199,13 @@ export function Inspector() {
       }
     };
     if (!onCurrentPage) {
-      window.location.hash = `#/${c.pageId}`;
+      window.location.hash = `#/d/${encodeURIComponent(docId)}/p/${encodeURIComponent(c.pageId)}`;
       finish(0);
     } else {
       finish(0);
     }
   }
 
-  // Stable key — only changes when selected identity changes.
   const selectedKey = useMemo(
     () =>
       selected
@@ -226,9 +214,6 @@ export function Inspector() {
     [selected?.identity.file, selected?.identity.line, selected?.identity.col],
   );
 
-  // Prime the drafts ONLY when identity changes. This is the critical fix:
-  // previously every rect update re-created `selected`, which re-ran this
-  // effect and wiped textDraft mid-typing.
   // biome-ignore lint: deliberate identity-key dependency
   useEffect(() => {
     if (selected) {
@@ -240,7 +225,6 @@ export function Inspector() {
     }
   }, [selectedKey]);
 
-  // Autofocus the text textarea only on identity change, not on every rect update.
   // biome-ignore lint: deliberate identity-key dependency
   useLayoutEffect(() => {
     if (selected?.editableText !== null && textRef.current) {
@@ -252,9 +236,6 @@ export function Inspector() {
     }
   }, [selectedKey]);
 
-  // Refresh rect of selected. Also re-read editableText so the "Unsaved"
-  // badge updates after HMR replaces textContent in place. We never reset
-  // textDraft here — that only happens on identity change.
   const refreshSelectedRect = useCallback(() => {
     setSelected((cur) => {
       if (!cur) return cur;
@@ -283,7 +264,6 @@ export function Inspector() {
     window.addEventListener('resize', onResize);
     const hot = import.meta.hot;
     const onHmr = () => {
-      // Allow DOM to settle, then re-snap.
       requestAnimationFrame(refreshSelectedRect);
     };
     hot?.on('vite:afterUpdate', onHmr);
@@ -294,7 +274,6 @@ export function Inspector() {
     };
   }, [refreshSelectedRect]);
 
-  // Pointer + click handling.
   useEffect(() => {
     function inPanel(el: EventTarget | null): boolean {
       return el instanceof Node ? !!panelRef.current?.contains(el) : false;
@@ -364,9 +343,11 @@ export function Inspector() {
 
   useEffect(() => {
     if (!toast) return;
-    // Errors get a longer dwell — the failure message is usually long and
-    // sits behind the floating panel which limits the readable window.
-    const id = setTimeout(() => setToast(null), toast.kind === 'err' ? 4500 : 2500);
+    const dwell = Math.min(
+      9000,
+      Math.max(toast.kind === 'err' ? 5000 : 3000, toast.msg.length * 80),
+    );
+    const id = setTimeout(() => setToast(null), dwell);
     return () => clearTimeout(id);
   }, [toast]);
 
@@ -445,7 +426,6 @@ export function Inspector() {
     );
   }, [pageComments, selected]);
 
-  // Panel positioning.
   const PANEL_W = 384;
   const PANEL_H_EST = 360;
   let panelTop = 0;
@@ -509,7 +489,6 @@ export function Inspector() {
           }}
           onClick={(e) => e.stopPropagation()}
         >
-          {/* Panel header */}
           <div className="flex items-center justify-between gap-2 px-3 py-2 border-b border-rule">
             <div className="flex items-center gap-2 min-w-0">
               <span className="tag-chip">&lt;{selected.tag}&gt;</span>

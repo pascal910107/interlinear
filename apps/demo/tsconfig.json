@@ -1,4 +1,4 @@
 {
   "extends": "../../tsconfig.base.json",
-  "include": ["src", "pages", "interlinear.config.ts", "vite.config.ts"]
+  "include": ["src", "docs", "interlinear.config.ts", "vite.config.ts"]
 }

@@ -33,7 +33,6 @@ function walkJsx(ast: unknown, visit: (n: t.Node) => void): void {
   recurse(ast);
 }
 
-// Find the smallest JSXElement whose opening tag starts at line/column.
 function findElementAt(ast: t.Node, line: number, column: number): t.JSXElement | null {
   let best: t.JSXElement | null = null;
   walkJsx(ast, (n) => {
@@ -48,9 +47,12 @@ function findElementAt(ast: t.Node, line: number, column: number): t.JSXElement 
   return best;
 }
 
-export type ApplyEditOptions = { root: string };
+export type ApplyEditOptions = {
+  /** Root containing all docs. `file` paths are relative to this. */
+  docsRoot: string;
+};
 
-export function applyEditEndpoint({ root }: ApplyEditOptions): Plugin {
+export function applyEditEndpoint({ docsRoot }: ApplyEditOptions): Plugin {
   return {
     name: 'interlinear-apply-edit',
     configureServer(server) {
@@ -73,10 +75,10 @@ export function applyEditEndpoint({ root }: ApplyEditOptions): Plugin {
               text: string;
             };
 
-            const target = resolve(root, file);
-            if (!target.startsWith(`${root}/`) && target !== root) {
+            const target = resolve(docsRoot, file);
+            if (!target.startsWith(`${docsRoot}/`) && target !== docsRoot) {
               res.statusCode = 400;
-              res.end(JSON.stringify({ ok: false, error: 'path escapes project root' }));
+              res.end(JSON.stringify({ ok: false, error: 'path escapes docs root' }));
               return;
             }
 
@@ -99,9 +101,6 @@ export function applyEditEndpoint({ root }: ApplyEditOptions): Plugin {
               return;
             }
 
-            // Only support elements whose children are exactly one JSXText.
-            // Anything else (nested elements, expression containers) is too
-            // ambiguous to in-place edit from a flat textarea.
             const meaningful = el.children.filter(
               (c) => !(t.isJSXText(c) && c.value.trim() === ''),
             );
@@ -116,9 +115,6 @@ export function applyEditEndpoint({ root }: ApplyEditOptions): Plugin {
               return;
             }
 
-            // Replace the SOURCE span between opening `>` and closing `<`,
-            // not just the JSXText node — that way we preserve any leading
-            // whitespace/newlines that bind to the JSXText.
             const startOffset = el.openingElement.end ?? -1;
             const closingStart = el.closingElement?.start ?? -1;
             if (startOffset < 0 || closingStart < 0) {

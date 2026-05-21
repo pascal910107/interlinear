@@ -22,7 +22,12 @@ Output JSON shape:
           "width": <pdf-points>,
           "height": <pdf-points>,
           "text": "<flat text with [[FIGURE_N]] markers>",
-          "figures": [{ "marker": "FIGURE_1", "bbox": [x0,y0,x1,y1], "xref": 12 }, ...],
+          "figures": [
+            { "marker": "FIGURE_1", "kind": "raster", "bbox": [x0,y0,x1,y1],
+              "xref": 12, "pngPath": "page-0001-figure-1.png" },
+            { "marker": "FIGURE_2", "kind": "vector", "bbox": [x0,y0,x1,y1],
+              "pngPath": "page-0001-figure-2.png" }
+          ],
           "tables": [
             {
               "bbox": [x0,y0,x1,y1],
@@ -101,26 +106,235 @@ def find_recurring_image_xrefs(doc: fitz.Document, min_pages: int = 20) -> set[i
     return {x for x, c in count.items() if c >= min_pages}
 
 
-def collect_figures(
+def collect_raster_figures(
     page: fitz.Page,
     exclude_xrefs: set[int],
     min_dim_pt: float = 50.0,
-) -> list[dict]:
-    out: list[dict] = []
+    max_page_area_ratio: float = 0.85,
+) -> list[tuple[int, tuple[float, float, float, float]]]:
+    """Detect raster figures from embedded PDF image xrefs.
+
+    Returns (xref, bbox) tuples in source order. PNG rendering and marker
+    numbering are deferred to `merge_and_render_figures` so raster and
+    vector figures share a single numbering pass.
+
+    Skips images whose bbox covers more than `max_page_area_ratio` of the
+    page — those are cover-page backgrounds or watermark images, not
+    real figures.
+    """
+    page_rect = page.rect
+    page_area = (page_rect.x1 - page_rect.x0) * (page_rect.y1 - page_rect.y0) or 1.0
     seen: set[int] = set()
-    raw: list[tuple[float, int, tuple[float, float, float, float]]] = []
+    out: list[tuple[int, tuple[float, float, float, float]]] = []
     for inf in page.get_image_info(xrefs=True):
         xref = inf.get("xref", 0)
         if not xref or xref in exclude_xrefs or xref in seen:
             continue
         bbox = inf.get("bbox", (0, 0, 0, 0))
-        if bbox[2] - bbox[0] < min_dim_pt or bbox[3] - bbox[1] < min_dim_pt:
+        w = bbox[2] - bbox[0]
+        h = bbox[3] - bbox[1]
+        if w < min_dim_pt or h < min_dim_pt:
+            continue
+        if (w * h) / page_area > max_page_area_ratio:
             continue
         seen.add(xref)
-        raw.append((bbox[1], xref, tuple(bbox)))
-    raw.sort(key=lambda f: f[0])
-    for i, (_y, xref, bbox) in enumerate(raw, 1):
-        out.append({"marker": f"FIGURE_{i}", "xref": xref, "bbox": list(bbox)})
+        out.append((xref, tuple(bbox)))
+    return out
+
+
+_MAX_DRAWINGS_PER_PAGE = 3000
+
+
+def cluster_rects(
+    rects: list[tuple[float, float, float, float]], gap: float
+) -> list[tuple[int, tuple[float, float, float, float]]]:
+    """Union-find clustering: merge rects that overlap or sit within `gap`.
+
+    Returns one (member_count, union_bbox) per cluster.
+    """
+    n = len(rects)
+    if n == 0:
+        return []
+    parent = list(range(n))
+
+    def find(x: int) -> int:
+        while parent[x] != x:
+            parent[x] = parent[parent[x]]
+            x = parent[x]
+        return x
+
+    def union(a: int, b: int) -> None:
+        ra, rb = find(a), find(b)
+        if ra != rb:
+            parent[ra] = rb
+
+    def near(a, b) -> bool:
+        return not (
+            a[2] + gap < b[0] or b[2] + gap < a[0]
+            or a[3] + gap < b[1] or b[3] + gap < a[1]
+        )
+
+    for i in range(n):
+        ai = rects[i]
+        for j in range(i + 1, n):
+            if near(ai, rects[j]):
+                union(i, j)
+
+    groups: dict[int, list[float]] = {}
+    counts: dict[int, int] = {}
+    for i, r in enumerate(rects):
+        root = find(i)
+        if root not in groups:
+            groups[root] = [r[0], r[1], r[2], r[3]]
+            counts[root] = 1
+        else:
+            g = groups[root]
+            g[0] = min(g[0], r[0])
+            g[1] = min(g[1], r[1])
+            g[2] = max(g[2], r[2])
+            g[3] = max(g[3], r[3])
+            counts[root] += 1
+    return [(counts[k], tuple(groups[k])) for k in groups]
+
+
+def _overlap_ratio(a, b) -> float:
+    """Fraction of `a`'s area that lies inside `b`."""
+    ix0 = max(a[0], b[0]); iy0 = max(a[1], b[1])
+    ix1 = min(a[2], b[2]); iy1 = min(a[3], b[3])
+    if ix1 <= ix0 or iy1 <= iy0:
+        return 0.0
+    inter = (ix1 - ix0) * (iy1 - iy0)
+    aa = (a[2] - a[0]) * (a[3] - a[1])
+    return inter / aa if aa else 0.0
+
+
+def collect_vector_figures(
+    page: fitz.Page,
+    table_bboxes: list[list[float]],
+    raster_bboxes: list[tuple[float, float, float, float]],
+    text_bboxes: list[tuple[float, float, float, float]],
+    min_dim_pt: float = 80.0,
+    gap: float = 10.0,
+    min_drawings: int = 3,
+    max_page_area_ratio: float = 0.7,
+) -> list[tuple[float, float, float, float]]:
+    """Detect vector graphics regions (block diagrams, schematics, timing
+    diagrams) by clustering drawing operators on the page.
+
+    Filters out:
+      - clusters whose center sits inside a text block (the PDF renders a
+        per-line highlight/strikethrough rect behind every line of prose,
+        or — in some Chinese PDFs — glyphs themselves appear in the
+        drawing stream; either way it's text, not a figure)
+      - clusters whose center sits inside a detected table (table grid lines)
+      - clusters that mostly coincide with a raster figure (already covered)
+      - degenerate clusters with too few drawings (single backgrounds, rules,
+        separator lines) — `min_drawings` floor
+      - clusters whose bbox dominates the page (page background, watermark
+        frame) — `max_page_area_ratio` ceiling
+      - clusters whose bbox is below `min_dim_pt` on either axis
+    """
+    try:
+        drawings = page.get_drawings()
+    except Exception:
+        return []
+    if not drawings:
+        return []
+
+    rects: list[tuple[float, float, float, float]] = []
+    truncated = False
+    for d in drawings:
+        r = d.get("rect")
+        if r is None:
+            continue
+        if r.width < 2 or r.height < 2:
+            # Hairline strokes — table grids, underlines, dividers.
+            continue
+        if len(rects) >= _MAX_DRAWINGS_PER_PAGE:
+            truncated = True
+            break
+        rects.append((r.x0, r.y0, r.x1, r.y1))
+    if truncated:
+        print(
+            f"  warning: drawing count exceeds {_MAX_DRAWINGS_PER_PAGE}; "
+            "vector-figure detection on this page is partial.",
+            file=sys.stderr,
+        )
+
+    page_rect = page.rect
+    page_area = (page_rect.x1 - page_rect.x0) * (page_rect.y1 - page_rect.y0) or 1.0
+    clusters = cluster_rects(rects, gap=gap)
+
+    kept: list[tuple[float, float, float, float]] = []
+    for count, bbox in clusters:
+        w = bbox[2] - bbox[0]
+        h = bbox[3] - bbox[1]
+        if w < min_dim_pt or h < min_dim_pt:
+            continue
+        if count < min_drawings:
+            continue
+        if (w * h) / page_area > max_page_area_ratio:
+            continue
+        cx = (bbox[0] + bbox[2]) / 2
+        cy = (bbox[1] + bbox[3]) / 2
+        if any(t[0] <= cx <= t[2] and t[1] <= cy <= t[3] for t in table_bboxes):
+            continue
+        # Text-as-paths and per-line highlight rects: drawings hugging a
+        # text-block bbox. If the cluster's center is inside any text
+        # block, OR the cluster is mostly contained inside the union of
+        # text blocks, reject — it's text, not a figure.
+        if any(t[0] <= cx <= t[2] and t[1] <= cy <= t[3] for t in text_bboxes):
+            continue
+        text_overlap = sum(
+            _overlap_ratio(bbox, t) for t in text_bboxes
+        )
+        if text_overlap > 0.5:
+            continue
+        if any(_overlap_ratio(bbox, r) > 0.5 for r in raster_bboxes):
+            continue
+        kept.append(bbox)
+    kept.sort(key=lambda b: b[1])
+    return kept
+
+
+def merge_and_render_figures(
+    page: fitz.Page,
+    page_no: int,
+    png_dir: Path,
+    raster: list[tuple[int, tuple[float, float, float, float]]],
+    vector: list[tuple[float, float, float, float]],
+    scale: float = 2.0,
+) -> list[dict]:
+    """Merge raster + vector figures, sort by y, number sequentially, and
+    render one PNG per figure by clipping the page render at its bbox.
+
+    Cropping from the page render (not the source xref) preserves vector
+    overlays on raster images AND captures the text labels that compose
+    most vector diagrams.
+    """
+    items: list[dict] = []
+    for xref, bbox in raster:
+        items.append({"kind": "raster", "xref": xref, "bbox": list(bbox)})
+    for bbox in vector:
+        items.append({"kind": "vector", "bbox": list(bbox)})
+    items.sort(key=lambda f: f["bbox"][1])
+
+    out: list[dict] = []
+    for i, fig in enumerate(items, 1):
+        bbox = fig["bbox"]
+        entry: dict = {"marker": f"FIGURE_{i}", "kind": fig["kind"], "bbox": bbox}
+        if fig["kind"] == "raster":
+            entry["xref"] = fig["xref"]
+        png_name = f"page-{page_no:04d}-figure-{i}.png"
+        try:
+            clip = fitz.Rect(*bbox) & page.rect
+            if not clip.is_empty and clip.width >= 10 and clip.height >= 10:
+                pix = page.get_pixmap(matrix=fitz.Matrix(scale, scale), clip=clip)
+                pix.save(str(png_dir / png_name))
+                entry["pngPath"] = png_name
+        except Exception as e:
+            print(f"  failed to render figure {png_name}: {e}", file=sys.stderr)
+        out.append(entry)
     return out
 
 
@@ -263,9 +477,26 @@ def extract_page(doc: fitz.Document, page_no: int, png_dir: Path, exclude_xrefs:
     pix = page.get_pixmap(matrix=fitz.Matrix(2, 2))
     pix.save(str(png_path))
 
-    figures = collect_figures(page, exclude_xrefs)
-    text, watermark_removed = build_positional_text(page, figures)
+    # Tables first — their bboxes filter out table grid-lines from the
+    # vector-figure clustering step. Text-block bboxes filter out the
+    # per-line highlight rects (and text-as-paths glyphs) that some PDFs
+    # emit as drawing operators.
     tables = collect_tables(page)
+    text_bboxes: list[tuple[float, float, float, float]] = []
+    for block in page.get_text("blocks") or []:
+        x0, y0, x1, y1, _t, _bno, btype = block
+        if btype != 0:
+            continue
+        text_bboxes.append((x0, y0, x1, y1))
+    raster = collect_raster_figures(page, exclude_xrefs)
+    vector = collect_vector_figures(
+        page,
+        [t["bbox"] for t in tables],
+        [b for _, b in raster],
+        text_bboxes,
+    )
+    figures = merge_and_render_figures(page, page_no, png_dir, raster, vector)
+    text, watermark_removed = build_positional_text(page, figures)
 
     rect = page.rect
     return {

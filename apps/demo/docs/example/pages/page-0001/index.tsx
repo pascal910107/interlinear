@@ -15,7 +15,7 @@ runner.start(config);`;
 export default function Page0001() {
   return (
     <BilingualPage
-      originalSrc="/page-0001.png"
+      originalSrc="/example/page-0001.png"
       pageLabel="page 1"
       footerLeft="1"
       footerCenter="Example Doc"

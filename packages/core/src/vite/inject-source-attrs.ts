@@ -3,6 +3,12 @@ import { relative } from 'node:path';
 
 type Opts = { root: string };
 
+// Match a leading-slash URL with at least two segments: /<first>/<rest>.
+const DOC_PREFIXED_URL = /^\/([^/]+)\/(.+)$/;
+// Attributes whose value names a doc-local asset URL. Keep tight: only
+// known asset-bearing props so we don't trash unrelated string props.
+const ASSET_ATTRS = new Set(['src', 'originalSrc', 'href', 'poster']);
+
 // Lightweight babel plugin: adds data-src-{file,line,col} attributes to every
 // JSX opening element in dev so the in-browser inspector can resolve the
 // clicked DOM node back to its TSX source location.
@@ -59,6 +65,27 @@ export function injectSourceAttrs(_babel: unknown) {
           path.node.attributes.push(
             t.jsxAttribute(t.jsxIdentifier('data-src-editable'), t.stringLiteral('true')),
           );
+        }
+
+        // Doc-id-aware asset URL rewriting. `data-src-file` is e.g.
+        // `<docId>/pages/<pageId>/index.tsx`, so the first path segment is
+        // the doc id this file currently lives under. Any string-literal
+        // src/href/originalSrc/poster value of the form `/<x>/<rest>` is
+        // rewritten so `<x>` is replaced with the current doc id — that
+        // way, renaming the doc directory doesn't break the asset URLs
+        // baked into pages.
+        const docId = rel.split('/')[0] ?? '';
+        if (docId) {
+          for (const attr of path.node.attributes) {
+            if (attr.type !== 'JSXAttribute') continue;
+            if (attr.name.type !== 'JSXIdentifier') continue;
+            if (!ASSET_ATTRS.has(attr.name.name)) continue;
+            if (!attr.value || attr.value.type !== 'StringLiteral') continue;
+            const m = DOC_PREFIXED_URL.exec(attr.value.value);
+            if (!m) continue;
+            if (m[1] === docId) continue;
+            attr.value = t.stringLiteral(`/${docId}/${m[2]}`);
+          }
         }
       },
     },

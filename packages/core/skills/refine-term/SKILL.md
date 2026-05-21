@@ -56,10 +56,10 @@ produce a proper AST — do not regex-replace the file contents directly.
    question, then proceed.
 
 2. **Find the pages.**
-   - Glob `pages/**/index.tsx` from the user workspace. In a monorepo
-     layout the path is typically `apps/<app>/pages/**/index.tsx`; in a
-     flat layout it's `pages/**/index.tsx`. Mirror the `apply-comments`
-     globbing — same root assumption.
+   - Glob `apps/demo/docs/*/pages/**/index.tsx`. If the user scoped the
+     request to one doc ("rename register → 暫存器 in example-mcu-sdg"),
+     narrow to `apps/demo/docs/<docId>/pages/**/index.tsx`. Mirror the
+     `apply-comments` skill's globbing.
    - If zero pages match, stop and tell the user.
 
 3. **Walk each page's AST.**
@@ -93,7 +93,7 @@ produce a proper AST — do not regex-replace the file contents directly.
      simpler to audit and reverse if something goes wrong.
 
 5. **Type-check.**
-   Run `pnpm typecheck` from the workspace root. If a page now fails to
+   Run `pnpm typecheck` from the repo root. If a page now fails to
    type-check, **revert that page only** (re-apply the inverse edits or
    `git checkout -- <file>` if clean) and report it as skipped. Do not
    roll back the whole batch — partial success is fine; lying about it
@@ -133,11 +133,11 @@ produce a proper AST — do not regex-replace the file contents directly.
 
 ## Do not
 
-- Do not touch anything outside `pages/**/index.tsx`.
+- Do not touch anything outside `apps/demo/docs/*/pages/**/index.tsx`.
 - Do not add dependencies — `@babel/parser` and `@babel/traverse` are
   already in the tree via `@interlinear/core`.
-- Do not modify `apps/<app>/interlinear.config.ts`, `vite.config.ts`, or
-  any file under `packages/core/`.
+- Do not modify any `interlinear.config.ts`, `vite.config.ts`, or any
+  file under `packages/core/`.
 - Do not commit. Leave the diff staged-or-not as the user prefers; the
   inspector + dev server pick the changes up via HMR for instant review.
 - Do not loop this skill with itself ("now refine N more terms") — if
