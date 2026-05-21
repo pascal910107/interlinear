@@ -1,0 +1,228 @@
+@import "tailwindcss";
+
+/* Tailwind v4 only auto-scans the project that hosts the @tailwindcss/vite
+   plugin (apps/demo). Tell it to also scan our runtime + editing source so
+   utility classes referenced by <Inspector>, <BilingualPage>, etc. get
+   generated. Paths are relative to this CSS file. */
+@source "../**/*.{ts,tsx}";
+
+@theme {
+  --font-display: "Source Serif 4", "Noto Serif TC", Georgia, serif;
+  --font-body: "Source Serif 4", "Noto Serif TC", Georgia, serif;
+  --font-mono: "IBM Plex Mono", "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+
+  /* Paper & ink */
+  --color-paper: #f4efe2;
+  --color-paper-deep: #ece5cf;
+  --color-surface: #fbf8ee;
+  --color-ink: #15140f;
+  --color-ink-strong: #000000;
+  --color-ink-muted: #6b6258;
+  --color-ink-faded: #a09787;
+  --color-rule: #d9d2bf;
+  --color-rule-soft: #ebe5d3;
+
+  /* Single dominant accent — vermillion ink */
+  --color-accent: #b13d22;
+  --color-accent-deep: #8a2d17;
+  --color-accent-soft: #f1d6cb;
+  --color-accent-tint: rgba(177, 61, 34, 0.08);
+
+  /* Status — used sparingly */
+  --color-ok: #4f6a3b;
+  --color-warn: #b08130;
+  --color-warn-soft: #f1e3c1;
+
+  /* Grain — used by body background-image. Light theme = ink dots on
+     paper; dark theme = warm dust on ink. Defined as tokens so the dark
+     override below can flip them without touching the gradient stack. */
+  --grain-color-a: rgba(21, 20, 15, 0.04);
+  --grain-color-b: rgba(21, 20, 15, 0.03);
+}
+
+/* Dark theme — same editorial direction, inverted lightness. Vermillion
+   warms a touch (#b13d22 → #c5563a) so it doesn't read as muddy against
+   the warm ink. Paper becomes warm-black, not midnight black, to keep
+   the archival-log feel rather than crossing into "AI app polish". */
+body[data-theme="dark"] {
+  --color-paper: #1a1813;
+  --color-paper-deep: #252220;
+  --color-surface: #221f1b;
+  --color-ink: #ede5d3;
+  --color-ink-strong: #ffffff;
+  /* ink-muted / ink-faded keep the same perceptual hierarchy as light
+     mode (muted > faded), but eyes are more sensitive to low contrast
+     on dark backgrounds — pushing both lighter than a simple lightness
+     inversion would suggest. ink-faded was originally #5f574d (~2.0:1)
+     which made the "/ 2" page indicator, disabled buttons, ESC chip,
+     and panel hints near-invisible. */
+  --color-ink-muted: #a89e89;
+  --color-ink-faded: #7f7666;
+  --color-rule: #4a4339;
+  --color-rule-soft: #332e28;
+
+  --color-accent: #c5563a;
+  --color-accent-deep: #a13e22;
+  --color-accent-soft: #3a221b;
+  --color-accent-tint: rgba(197, 86, 58, 0.14);
+
+  --color-ok: #7a9b5d;
+  --color-warn: #caa063;
+  --color-warn-soft: #3a3320;
+
+  --grain-color-a: rgba(237, 229, 211, 0.025);
+  --grain-color-b: rgba(237, 229, 211, 0.02);
+}
+
+html, body, #root {
+  height: 100%;
+}
+
+body {
+  background: var(--color-paper);
+  color: var(--color-ink);
+  font-family: var(--font-body);
+  font-feature-settings: "ss01", "kern";
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+  /* Subtle paper grain — radial noise simulated via two layered gradients.
+     Colors come from CSS tokens so the dark theme can flip the dot tone. */
+  background-image:
+    radial-gradient(var(--grain-color-a) 0.5px, transparent 0.5px),
+    radial-gradient(var(--grain-color-b) 0.5px, transparent 0.5px);
+  background-size: 3px 3px, 5px 5px;
+  background-position: 0 0, 1.5px 1.5px;
+}
+
+/* Inspect mode: only annotate elements that came from user `pages/*.tsx`
+   sources. The babel plugin injects `data-src-file` on every JSX element
+   in the tree (header, BilingualPage shell, original-image <aside>, …),
+   so a bare `[data-src-file]` selector would light up the whole UI. We
+   scope cursor / user-select to elements whose source path starts with
+   `pages/`, matching the Inspector's own inspectable-target predicate. */
+[data-src-file^="pages/"],
+[data-src-file^="pages/"] * {
+  cursor: pointer;
+}
+
+[data-inspector-ui],
+[data-inspector-ui] *,
+header,
+header * {
+  cursor: auto;
+}
+
+[data-inspector-ui] textarea,
+[data-inspector-ui] input {
+  cursor: text;
+}
+[data-inspector-ui] button {
+  cursor: pointer;
+}
+
+[data-src-file^="pages/"] {
+  user-select: none;
+  -webkit-user-select: none;
+}
+[data-inspector-ui] {
+  user-select: text;
+  -webkit-user-select: text;
+}
+
+/* Body typography on the translation pane */
+.translation-pane {
+  font-family: var(--font-body);
+  font-size: 13.5px;
+  line-height: 1.65;
+  color: var(--color-ink);
+}
+
+.translation-pane h1,
+.translation-pane h2 {
+  font-family: var(--font-display);
+  letter-spacing: -0.005em;
+}
+
+/* Tag chip used by the inspector */
+.tag-chip {
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  font-weight: 500;
+  letter-spacing: 0.04em;
+  text-transform: lowercase;
+  background: var(--color-paper-deep);
+  color: var(--color-ink);
+  padding: 1px 6px;
+  border: 1px solid var(--color-rule);
+}
+
+.eyebrow {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  font-weight: 500;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: var(--color-ink-muted);
+}
+
+.numeric {
+  font-feature-settings: "tnum";
+}
+
+/* Section rule — a single hairline used everywhere instead of card shadows */
+.hairline {
+  border-color: var(--color-rule);
+}
+
+/* Buttons */
+.btn-accent {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  font-weight: 500;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  background: var(--color-accent);
+  color: var(--color-surface);
+  padding: 5px 10px;
+  border: 1px solid var(--color-accent-deep);
+}
+.btn-accent:hover { background: var(--color-accent-deep); }
+.btn-accent:disabled {
+  background: var(--color-paper-deep);
+  color: var(--color-ink-faded);
+  border-color: var(--color-rule);
+  cursor: not-allowed;
+}
+
+.btn-ghost {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  font-weight: 500;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  background: transparent;
+  color: var(--color-ink);
+  padding: 5px 10px;
+  border: 1px solid var(--color-rule);
+}
+.btn-ghost:hover { background: var(--color-paper-deep); }
+.btn-ghost:disabled {
+  color: var(--color-ink-faded);
+  cursor: not-allowed;
+}
+
+/* Textareas */
+.field {
+  font-family: var(--font-body);
+  font-size: 13.5px;
+  line-height: 1.55;
+  color: var(--color-ink);
+  background: var(--color-surface);
+  border: 1px solid var(--color-rule);
+  padding: 8px 10px;
+}
+.field:focus {
+  outline: none;
+  border-color: var(--color-accent);
+  background: var(--color-paper);
+}

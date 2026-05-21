@@ -1,0 +1,16 @@
+{
+  "name": "interlinear-monorepo",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "packageManager": "pnpm@10.28.2",
+  "scripts": {
+    "build": "pnpm -F @interlinear/core build",
+    "dev": "pnpm build && pnpm --filter @interlinear/demo dev",
+    "dev:watch": "pnpm -r --parallel --filter @interlinear/core --filter @interlinear/demo dev",
+    "typecheck": "pnpm build && pnpm -r --parallel run typecheck"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}

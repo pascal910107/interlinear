@@ -1,0 +1,47 @@
+import { fileURLToPath } from 'node:url';
+import { dirname, resolve } from 'node:path';
+import react from '@vitejs/plugin-react';
+import tailwindcss from '@tailwindcss/vite';
+import { defineConfig } from 'vite';
+
+import {
+  injectSourceAttrs,
+  interlinearPlugin,
+  applyCommentEndpoint,
+  applyEditEndpoint,
+  commentsApiEndpoint,
+} from '@interlinear/core/vite';
+
+import config from './interlinear.config';
+
+const __dirname = dirname(fileURLToPath(import.meta.url));
+const projectRoot = resolve(__dirname);
+
+// Dev-only pieces (injectSourceAttrs adds inspector hooks to JSX; the
+// __apply_* / __list_comments endpoints back the inspector via the dev
+// server). Production builds ship a static reader — none of these are
+// useful or even functional once the dev server is gone.
+export default defineConfig(({ command }) => {
+  const isDev = command === 'serve';
+  return {
+    plugins: [
+      react({
+        babel: {
+          plugins: isDev ? [[injectSourceAttrs, { root: projectRoot }]] : [],
+        },
+      }),
+      tailwindcss(),
+      interlinearPlugin({ userCwd: projectRoot, config }),
+      ...(isDev
+        ? [
+            applyCommentEndpoint({ root: projectRoot }),
+            applyEditEndpoint({ root: projectRoot }),
+            commentsApiEndpoint({ root: projectRoot }),
+          ]
+        : []),
+    ],
+    server: {
+      port: 5173,
+    },
+  };
+});

@@ -1,0 +1,39 @@
+# Local-only design notes — not shipped
+docs/
+HANDOFF.md
+.notes/
+
+# Spike — validated 2026-05-21, kept on disk for reference, not in the repo.
+# See docs/spike-postmortem.md for what it proved.
+spike/
+
+# Real translation workspaces — one folder per PDF you're post-editing.
+# These hold user content (pages, original-page PNGs, per-PDF config) and
+# never go to git. The framework's own apps/demo/ is the only sample that
+# ships.
+workspaces/
+
+# Locally-installed developer skills (e.g. frontend-design installed via
+# `npx skills add`). Not part of the framework. The framework's own
+# user-workspace skills live under packages/core/skills/ and packages/cli/
+# template/.agents/skills/.
+.agents/
+skills-lock.json
+
+# Dependencies
+node_modules/
+
+# Build output
+dist/
+build/
+*.tsbuildinfo
+
+# OS / editor noise
+.DS_Store
+*.log
+.vscode/
+.idea/
+
+# Local env
+.env
+.env.local
