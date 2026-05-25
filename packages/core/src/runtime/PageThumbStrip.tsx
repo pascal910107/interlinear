@@ -53,12 +53,20 @@ export function PageThumbStrip({ pageIds, currentId, onGo, thumbnailSrc }: Props
     return () => window.removeEventListener('keydown', onKey);
   }, []);
 
-  // Keep the current page visible in the rail.
+  // Keep the current page visible in the rail. We scroll inside the rail's
+  // own overflow container (not the page), and use `block: 'center'` so a
+  // deep-linked current page lands in the middle of the visible strip even
+  // when it's hundreds of items down. Without an explicit aspect-ratio on
+  // each thumbnail (see below), lazy-loaded images would collapse to 0×0 on
+  // first paint, scrollIntoView would scroll to the wrong place, and as
+  // thumbnails progressively loaded they'd push the current item out of
+  // view — the symptom users see is "I reloaded on page 60 and the rail
+  // shows page 40".
   const listRef = useRef<HTMLUListElement>(null);
   const currentItemRef = useRef<HTMLLIElement>(null);
   useLayoutEffect(() => {
     if (!open) return;
-    currentItemRef.current?.scrollIntoView({ block: 'nearest', behavior: 'auto' });
+    currentItemRef.current?.scrollIntoView({ block: 'center', behavior: 'auto' });
   }, [open, currentId]);
 
   return (
@@ -115,7 +123,10 @@ export function PageThumbStrip({ pageIds, currentId, onGo, thumbnailSrc }: Props
                     loading="lazy"
                     decoding="async"
                     className="w-full h-auto block"
-                    style={{ background: 'var(--color-paper-deep)' }}
+                    // A4 aspect (210/297) reserves vertical space before the
+                    // image loads, so the list's scrollHeight is stable from
+                    // first paint and scrollIntoView lands on the right item.
+                    style={{ aspectRatio: '210 / 297', background: 'var(--color-paper-deep)' }}
                     onError={(e) => {
                       // Hide broken-image icon; the pageId label below still
                       // tells the user which page this is.
