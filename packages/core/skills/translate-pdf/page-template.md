@@ -78,8 +78,8 @@ import { BilingualPage } from '@interlinear/core';
   originalSrc="/<docId>/page-<NNNN>.png"
   pageLabel="page <N>"
   footerLeft="<N>"
-  footerCenter="<chapter or section hint>"
-  footerRight="<next-page hint>"
+  footerCenter="<section or chapter title from the running footer>"
+  footerRight="<page label in target locale, e.g. 頁 N>"
 >
   {/* translated content here */}
 </BilingualPage>
@@ -251,6 +251,93 @@ export-to-PDF flow will surface this as "figure missing":
 In either case, `<figure>` is block-level — if the `[[FIGURE_K]]` marker
 sat inside a paragraph mid-sentence, lift it OUT to be a sibling of
 `<p>`, not a child. Preserve the surrounding sentence flow.
+
+### Case C — inline icon (small figure embedded mid-sentence)
+
+When a `[[FIGURE_K]]` marker sits BETWEEN words of a single sentence
+(e.g. "click [[FIGURE_3]] to build a project", a UI button glyph drawn
+into prose) and the figure's bbox is small (roughly icon-sized — under
+~50px tall on the rendered 2× PNG, or visibly smaller than the
+surrounding line height in the left pane), it is an inline icon, not a
+block figure. Render it INLINE — do NOT lift it out to a sibling
+`<figure>` and do NOT replace it with a `<br />`:
+
+```tsx
+<p className="mb-4 text-ink leading-relaxed">
+  點擊
+  <img
+    src="/<docId>/<pngPath>"
+    alt="<short description, e.g. Build 按鈕>"
+    className="inline-block h-[1.1em] align-text-bottom mx-1"
+  />
+  以編譯專案。
+</p>
+```
+
+The most common cases: toolbar button glyphs in step-by-step
+instructions, keycap symbols, inline math/unit glyphs, and tiny status
+icons. When in doubt, glance at the left-pane PNG — if the figure is
+sitting at x-height inside a sentence and the sentence still reads
+across it, render it inline. Dropping the icon (just deleting the
+marker, or replacing with a `<br />`) is wrong; the reader needs to
+see WHICH button to click.
+
+If the figure has no `pngPath` (Case B fallback) but is inline, use a
+short bracketed gloss instead of the placeholder figure:
+
+```tsx
+點擊 <span className="font-mono text-[12.5px] text-accent">[Build]</span> 以編譯專案。
+```
+
+## Running header / footer handling (DO NOT capture into body)
+
+Most pages have a printed running footer **below a horizontal rule** at the
+very bottom of the page. The framework re-renders that footer itself via
+`footerLeft` / `footerCenter` / `footerRight` on `<BilingualPage>`, so the
+raw footer text must NOT appear anywhere inside `{children}`. The extractor
+sometimes leaves it in the text stream — strip it.
+
+### What the running footer looks like
+
+Two layout conventions across the typical book:
+
+- **Recto (odd page)**: `<section title>` on the left, `<page number>` on the right.
+  e.g. `1.5. To start a new project` | `37`
+- **Verso (even page)**: `<page number>` on the left, `<chapter title>` on the right.
+  e.g. `38` | `Chapter 1. Getting Start`
+
+Some books also print a running header (chapter title centered or right-aligned
+above the body). Same rule: strip it from `{children}` and let the chrome
+render it.
+
+### How to populate the chrome footer
+
+Map the running footer's parts into the slots:
+
+- `footerLeft="<N>"` — page number, always. The slot is `w-12` mono numeric.
+- `footerCenter="<section or chapter title>"` — whichever the original page
+  shows. Translate it (the chrome footer is on the translation side).
+- `footerRight="<page label in target locale>"` — e.g. `"頁 37"` or `"Page 37"`.
+  Use this for symmetry; don't duplicate `footerCenter` here.
+
+### What is NOT a running footer (KEEP in body)
+
+The PDF's body sometimes contains italic continuation cues like
+`(continued from previous page)` / `（承上頁）` / `表 5.1 — 接續上頁` /
+`continued on next page` / `（接下頁）`. These sit ABOVE the rule line in the
+source — they are real body content (often inside or adjacent to a long
+table). Keep them in `{children}` as a normal `<p>` with the muted italic
+styling already in use:
+
+```tsx
+<p className="mb-4 text-ink-muted text-[12px] italic text-right">
+  續接下一頁
+</p>
+```
+
+When in doubt, glance at the left-pane PNG: if the text sits ABOVE the
+horizontal rule, it's body content; if it sits BELOW the rule, it's the
+running footer and must be stripped.
 
 ## Empty / watermark-only / trivially-short pages
 

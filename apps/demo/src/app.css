@@ -1,0 +1,17 @@
+@import "@interlinear/core/styles/tokens.css";
+
+/* Auto-generated safelist of utilities used by per-doc pages under
+   apps/demo/docs/. The interlinear vite plugin scans every .tsx file
+   in docsRoot at startup (and on page HMR), extracts className tokens,
+   and writes `@source inline("...")` into the file imported below.
+
+   Why this exists: per-doc pages are gitignored, and Tailwind v4 Oxide
+   respects .gitignore even for explicit `@source "<path>"` paths — so
+   page-only utilities (list-decimal, columns-2, …) would otherwise
+   vanish from the built CSS. Inline safelisting bypasses the scanner
+   entirely. */
+@import "../.interlinear/page-classes.css";
+
+/* Escape hatch — if the auto-scanner misses a utility (e.g. one only
+   referenced from inside a non-trivial JS expression), add it here. */
+/* @source inline("..."); */

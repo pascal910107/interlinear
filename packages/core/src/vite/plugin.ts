@@ -1,4 +1,5 @@
 import { createReadStream, existsSync } from 'node:fs';
+import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import fg from 'fast-glob';
 import type { Plugin, ViteDevServer } from 'vite';
@@ -14,6 +15,14 @@ export type InterlinearPluginOptions = {
 };
 
 const DOCS_VMOD = 'virtual:interlinear/docs';
+
+// Auto-generated Tailwind safelist on disk. We tried exposing this as a
+// virtual CSS module (resolveId/load returning `@source inline("…")`) but
+// Tailwind v4's customCssResolver requires `path.isAbsolute(resolvedId)`,
+// which excludes `\0virtual:…` ids — so CSS @imports never reach our
+// plugin's resolveId for virtual modules. A real file under the already-
+// gitignored `.interlinear/` dir is the simplest workaround.
+const SAFELIST_REL = path.join('.interlinear', 'page-classes.css');
 
 function resolved(id: string): string {
   return `\0${id}`;
@@ -132,6 +141,139 @@ function generateDocsModule(docs: Doc[], isDev: boolean): string {
   return out.join('\n');
 }
 
+// ---------------------------------------------------------------------------
+// Tailwind safelist from gitignored docs pages
+// ---------------------------------------------------------------------------
+// Per-doc pages live under <docsRoot>/<docId>/<pagesDir>/page-NNNN/index.tsx
+// and are gitignored by convention. Tailwind v4's Oxide scanner respects
+// .gitignore even for explicit `@source "<path>"` paths, so any utility used
+// ONLY inside a page (list-decimal, columns-2, …) would silently fall out of
+// the built CSS. We work around this by scanning the docs tree ourselves and
+// writing `@source inline("…")` to `<userCwd>/.interlinear/page-classes.css`
+// — inline safelisting bypasses the file scanner and gitignore entirely.
+// The user imports the file from their app CSS so the safelist lands in
+// the same Tailwind compilation unit as their `@import "tailwindcss"`.
+//
+// (A virtual CSS module would be tidier, but Tailwind v4's customCssResolver
+// rejects non-absolute paths — including the `\0virtual:…` ids Vite uses
+// for virtual modules — so an on-disk file is the simplest path that works
+// without forking Tailwind.)
+
+const CLASSNAME_ATTR_RE =
+  /className\s*=\s*(?:["'`]([^"'`]+)["'`]|\{\s*["'`]([^"'`]+)["'`]\s*\})/g;
+// String literals that *might* be `const TD = 'border …'`-style class
+// constants (table-cell helpers the translator emits). We require ≥ 20
+// chars and at least one whitespace to filter random short strings, and
+// validate every token against looksLikeUtility() — if any token in the
+// string fails, the whole string is rejected (likely not a class list).
+const CLASS_LIKE_STRING_RE =
+  /["'`]([a-z][a-z0-9_\-\[\]/:.\s]{20,}?)["'`]/g;
+
+function looksLikeUtility(tok: string): boolean {
+  if (!tok || tok.length > 60) return false;
+  // Tailwind classes start with an optional negative dash + a lowercase
+  // letter: `-mt-2`, `list-decimal`, `hover:bg-red-500`, ….
+  if (!/^-?[a-z]/.test(tok)) return false;
+  // Carve out `[arbitrary value]` segments — those can legitimately contain
+  // anything (parens, commas, uppercase, percent signs, etc.) — and
+  // validate the rest more strictly.
+  const skeleton = tok.replace(/\[[^\]]*\]/g, '');
+  // The skeleton must be lowercase alphanumerics + the structural chars
+  // Tailwind allows between utility, variant, and modifier segments. Bare
+  // `-` (e.g. ffmpeg flags like `-an`, `-vcodec`) is rejected by the
+  // suffix check: a real Tailwind utility either contains another `-` or
+  // ends in alphanumerics.
+  if (!/^-?[a-z][a-z0-9\-_/:.]*$/.test(skeleton)) return false;
+  // Reject pure ffmpeg/CLI flag shape: `-something` with nothing else.
+  if (/^-[a-z][a-z]*$/.test(tok)) return false;
+  // Reject file-extension shape (`output.avi`, `init.scr`, `ffmpeg.exe`):
+  // a dot followed by 2-5 letters with no digit, at the end of the token,
+  // and no other `-`/`:`/`[` structure that would suggest a Tailwind class.
+  if (/^[a-z][a-z0-9_]*\.[a-z]{2,5}$/.test(tok)) return false;
+  return true;
+}
+
+async function extractDocsClasses(docsRoot: string): Promise<string[]> {
+  if (!existsSync(docsRoot)) return [];
+  const files = await fg('**/*.{tsx,jsx,ts,js}', {
+    cwd: docsRoot,
+    absolute: true,
+    onlyFiles: true,
+    ignore: [
+      '**/interlinear.config.{ts,js}',
+      '**/node_modules/**',
+      '**/.interlinear/**',
+      '**/public/**',
+    ],
+  });
+  const classes = new Set<string>();
+  await Promise.all(
+    files.map(async (file) => {
+      let content: string;
+      try {
+        content = await readFile(file, 'utf8');
+      } catch {
+        return;
+      }
+      // 1. className="…" / className={`…`} attributes — the common case.
+      for (const m of content.matchAll(CLASSNAME_ATTR_RE)) {
+        const raw = m[1] ?? m[2] ?? '';
+        for (const tok of raw.split(/\s+/)) {
+          if (looksLikeUtility(tok)) classes.add(tok);
+        }
+      }
+      // 2. `const TD = 'border …'` style class constants. The CLASS_LIKE_
+      // STRING_RE deliberately has a restrictive character class (lowercase
+      // + Tailwind structural chars only) so code identifiers like
+      // `iteIrGetFreqAvg(ITHIrPort` and prose strings don't match in the
+      // first place. We then ALSO require every token to pass
+      // looksLikeUtility — if any token fails, the whole string is
+      // rejected as non-class-list garbage.
+      for (const m of content.matchAll(CLASS_LIKE_STRING_RE)) {
+        const raw = m[1];
+        if (!/\s/.test(raw)) continue;
+        const tokens = raw.trim().split(/\s+/);
+        if (tokens.length < 2 || tokens.length > 50) continue;
+        if (!tokens.every(looksLikeUtility)) continue;
+        for (const tok of tokens) classes.add(tok);
+      }
+    }),
+  );
+  return Array.from(classes).sort();
+}
+
+function generatePageClassesCss(
+  classes: string[],
+  docsRoot: string,
+): string {
+  const header =
+    `/* auto-generated by @interlinear/core/vite — safelist of Tailwind\n` +
+    `   utilities used in ${docsRoot}\n` +
+    `   Do not edit by hand; the plugin rewrites this file on every dev\n` +
+    `   restart and on page HMR. */\n`;
+  if (classes.length === 0) {
+    return header + `/* no class candidates found */\n`;
+  }
+  // Double quotes inside class names are vanishingly rare but technically
+  // legal in arbitrary values; escape to keep the @source string parsable.
+  const escaped = classes.map((c) => c.replace(/"/g, '\\"')).join(' ');
+  return header + `@source inline("${escaped}");\n`;
+}
+
+// Cache last-written contents so unchanged regenerations don't re-trigger
+// Vite's CSS HMR (which would otherwise blink the page on every page edit).
+let lastWrittenSafelist = '';
+
+async function writeSafelist(userCwd: string, docsRoot: string): Promise<void> {
+  const classes = await extractDocsClasses(docsRoot);
+  const content = generatePageClassesCss(classes, docsRoot);
+  if (content === lastWrittenSafelist) return;
+  const target = path.resolve(userCwd, SAFELIST_REL);
+  await mkdir(path.dirname(target), { recursive: true });
+  await writeFile(target, content, 'utf8');
+  lastWrittenSafelist = content;
+}
+
 const STATIC_EXTS = new Set([
   '.png',
   '.jpg',
@@ -194,6 +336,16 @@ export function interlinearPlugin(opts: InterlinearPluginOptions): Plugin {
       }
       return null;
     },
+    async buildStart() {
+      // Regenerate the safelist before any CSS is transformed so the file
+      // is up-to-date for the first request (both dev and build). Cheap
+      // even with 1000+ pages — bounded by disk read throughput, not LLM
+      // calls.
+      await writeSafelist(userCwd, docsRoot).catch((err: unknown) => {
+        // eslint-disable-next-line no-console
+        console.warn('[interlinear] failed to write safelist:', err);
+      });
+    },
     handleHotUpdate(ctx) {
       const hit = isPageEntry(ctx.file, docsRoot, pagesDir);
       if (!hit) return;
@@ -202,6 +354,10 @@ export function interlinearPlugin(opts: InterlinearPluginOptions): Plugin {
         event: 'interlinear:page-changed',
         data: hit,
       });
+
+      // The page's className set may have changed. Rewrite the safelist
+      // file; the file watcher will then trigger HMR on the .css importer.
+      void writeSafelist(userCwd, docsRoot).catch(() => {});
       return;
     },
     configureServer(server: ViteDevServer) {
@@ -240,8 +396,11 @@ export function interlinearPlugin(opts: InterlinearPluginOptions): Plugin {
         reloadTimer = setTimeout(async () => {
           reloadTimer = null;
           await refreshDocIds();
-          const mod = server.moduleGraph.getModuleById(resolved(DOCS_VMOD));
-          if (mod) server.moduleGraph.invalidateModule(mod);
+          const docsMod = server.moduleGraph.getModuleById(resolved(DOCS_VMOD));
+          if (docsMod) server.moduleGraph.invalidateModule(docsMod);
+          // Added/removed pages change the class candidate set — rewrite
+          // the safelist file too.
+          await writeSafelist(userCwd, docsRoot).catch(() => {});
           server.ws.send({ type: 'full-reload' });
         }, 100);
       };
