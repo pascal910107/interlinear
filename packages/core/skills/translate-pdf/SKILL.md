@@ -58,6 +58,14 @@ Read these fields:
 
 If `sourcePdf` is missing, stop and ask the user to set it.
 
+If the doc directory exists but has no `interlinear.config.ts` yet
+(brand-new doc), scaffold one. Default `glossary: true` for new
+technical docs — the §4 front-load is cheap insurance against
+cross-page terminology drift, and once `.interlinear/glossary.json`
+exists the §4 guard prevents it from re-firing on later runs. Leave it
+`false` for small docs (< ~20 pages), pure-prose docs, or follow-up
+runs that only add a handful of pages to an already-translated doc.
+
 ## 2. Resolve the page range
 
 - If the user named a range ("translate pages 240–260"), honor it.
