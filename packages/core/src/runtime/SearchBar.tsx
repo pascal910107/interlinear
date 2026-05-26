@@ -11,6 +11,13 @@ type Hit = {
   snippet: string;
   snippetMatchStart: number;
   snippetMatchLength: number;
+  /** "translation" — JSXText hit with element coords. "original" — PDF text, no coords. */
+  source: 'translation' | 'original';
+};
+
+type PdfStatus = {
+  state: 'idle' | 'extracting' | 'ready' | 'error';
+  error?: string;
 };
 
 type Props = {
@@ -57,14 +64,20 @@ function flashElement(el: HTMLElement): void {
  * component renders nothing when `import.meta.env.DEV` is false.
  */
 export function SearchBar({ onGoToPage }: Props = {}) {
-  const { id: docId } = useDoc();
+  const { id: docId, currentPageId } = useDoc();
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState('');
   const [hits, setHits] = useState<Hit[]>([]);
   const [truncated, setTruncated] = useState(false);
   const [cursor, setCursor] = useState(0);
   const [loading, setLoading] = useState(false);
+  const [pdfStatus, setPdfStatus] = useState<PdfStatus>({ state: 'idle' });
+  // When opened by a cross-reference click, auto-jump to the unique
+  // off-page hit (if any) instead of forcing the user to click a result.
+  // Cleared after each open so a manual reopen behaves normally.
+  const autoJumpRef = useRef(false);
   const inputRef = useRef<HTMLInputElement>(null);
+  const listRef = useRef<HTMLUListElement>(null);
 
   const close = useCallback(() => {
     setOpen(false);
@@ -72,6 +85,7 @@ export function SearchBar({ onGoToPage }: Props = {}) {
     setHits([]);
     setTruncated(false);
     setCursor(0);
+    autoJumpRef.current = false;
   }, []);
 
   // Global `f` opens.
@@ -87,6 +101,21 @@ export function SearchBar({ onGoToPage }: Props = {}) {
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
   }, [open]);
+
+  // Cross-reference clicks (from <XRef> inside translated prose) dispatch
+  // an `interlinear:search` event with the quoted text. Open prefilled
+  // and arm auto-jump for a unique off-page hit.
+  useEffect(() => {
+    function onXrefSearch(e: Event) {
+      const detail = (e as CustomEvent<unknown>).detail;
+      if (typeof detail !== 'string' || detail.trim() === '') return;
+      autoJumpRef.current = true;
+      setQuery(detail);
+      setOpen(true);
+    }
+    window.addEventListener('interlinear:search', onXrefSearch);
+    return () => window.removeEventListener('interlinear:search', onXrefSearch);
+  }, []);
 
   // Focus input when opened.
   useEffect(() => {
@@ -107,6 +136,9 @@ export function SearchBar({ onGoToPage }: Props = {}) {
     }
     let cancelled = false;
     setLoading(true);
+    // Auto-jump came from an XRef click. Skip the debounce there — the
+    // user already committed and the perceived snappiness matters.
+    const debounce = autoJumpRef.current ? 0 : 150;
     const handle = setTimeout(async () => {
       try {
         const res = await fetch(
@@ -116,33 +148,76 @@ export function SearchBar({ onGoToPage }: Props = {}) {
           ok: boolean;
           hits?: Hit[];
           truncated?: boolean;
+          pdfStatus?: Record<string, PdfStatus>;
         };
         if (cancelled) return;
         if (data.ok && data.hits) {
           setHits(data.hits);
           setTruncated(Boolean(data.truncated));
           setCursor(0);
+          // New hits → reset scroll. The ul element is reused across
+          // queries; without this, the scroll position from a previous
+          // search persists and the freshly-rendered row 0 is rendered
+          // mid-list instead of at the top.
+          if (listRef.current) listRef.current.scrollTop = 0;
         } else {
           setHits([]);
           setTruncated(false);
         }
+        const ps = data.pdfStatus?.[docId];
+        if (ps) setPdfStatus(ps);
       } catch {
         if (!cancelled) setHits([]);
       } finally {
         if (!cancelled) setLoading(false);
       }
-    }, 150);
+    }, debounce);
     return () => {
       cancelled = true;
       clearTimeout(handle);
     };
   }, [open, query, docId]);
 
+  // While indexing is still in flight, poll status so the banner clears
+  // without the user having to retype. Cheap — `f` is rare and the loop
+  // self-terminates the moment the index is ready.
+  useEffect(() => {
+    if (!open) return;
+    if (pdfStatus.state !== 'extracting') return;
+    let cancelled = false;
+    const interval = setInterval(async () => {
+      try {
+        const res = await fetch(
+          `/__search?q=&doc=${encodeURIComponent(docId)}`,
+        );
+        const data = (await res.json()) as {
+          pdfStatus?: Record<string, PdfStatus>;
+        };
+        if (cancelled) return;
+        const ps = data.pdfStatus?.[docId];
+        if (ps) setPdfStatus(ps);
+      } catch {
+        // ignore — the next tick will retry
+      }
+    }, 1000);
+    return () => {
+      cancelled = true;
+      clearInterval(interval);
+    };
+  }, [open, docId, pdfStatus.state]);
+
   const goTo = useCallback(
     (h: Hit) => {
       close();
       const onCurrentPage = currentHashPageId() === h.pageId;
       const finish = (attempt = 0): void => {
+        // Original-source hits have no element coords — they were matched
+        // against the PDF's plain text, not the JSX. Just scroll to top
+        // and let the user line up the translation with the PNG.
+        if (h.source === 'original') {
+          window.scrollTo({ top: 0, behavior: 'smooth' });
+          return;
+        }
         const el = findByIdentity(h.file, h.elementLine, h.elementCol);
         if (!el) {
           if (attempt < 20) {
@@ -166,6 +241,58 @@ export function SearchBar({ onGoToPage }: Props = {}) {
     },
     [close, onGoToPage, docId],
   );
+
+  // Keep the cursor row at the nearest viewport edge of the list. We do
+  // the math by hand instead of calling row.scrollIntoView({ block:
+  // 'nearest' }) because the latter also walks up the ancestor chain and
+  // scrolls the document body (the SearchBar is fixed-positioned), which
+  // shifts the page underneath the dialog and reads as the highlight
+  // "jumping to the middle". Mutating ul.scrollTop directly only moves
+  // the list — nothing else.
+  useEffect(() => {
+    const ul = listRef.current;
+    if (!ul) return;
+    const row = ul.querySelector<HTMLLIElement>('[data-cursor="true"]');
+    if (!row) return;
+    const ulRect = ul.getBoundingClientRect();
+    const rowRect = row.getBoundingClientRect();
+    // Position of the row's top inside the list's scroll-content
+    // coordinate space (independent of offsetParent quirks).
+    const rowTop = rowRect.top - ulRect.top + ul.scrollTop;
+    const rowBottom = rowTop + rowRect.height;
+    if (rowBottom > ul.scrollTop + ul.clientHeight) {
+      // Row is below the visible area → pin its bottom to the viewport
+      // bottom (cursor sits at the bottom edge, prior rows scroll up).
+      ul.scrollTop = rowBottom - ul.clientHeight;
+    } else if (rowTop < ul.scrollTop) {
+      // Row is above the visible area → pin its top to the viewport top.
+      ul.scrollTop = rowTop;
+    }
+  }, [cursor]);
+
+  // Auto-jump triggered by an XRef click. Prioritized rules over off-page hits:
+  //   1. Exactly one is a section heading (h1-h4) → that's the canonical
+  //      target. Sibling references quoting the same phrase get filtered.
+  //   2. Otherwise, exactly one off-page hit total → jump to it.
+  //   3. Anything else → show the picker (ambiguous, let the user decide).
+  // autoJumpRef is cleared after evaluation so subsequent typing in the
+  // prefilled input doesn't keep re-jumping.
+  useEffect(() => {
+    if (!autoJumpRef.current) return;
+    if (loading) return;
+    const offPage = hits.filter((h) => h.pageId !== currentPageId);
+    autoJumpRef.current = false;
+    const headings = offPage.filter(
+      (h) => h.elementTag != null && /^h[1-4]$/.test(h.elementTag),
+    );
+    if (headings.length === 1) {
+      goTo(headings[0]);
+      return;
+    }
+    if (offPage.length === 1) {
+      goTo(offPage[0]);
+    }
+  }, [hits, loading, currentPageId, goTo]);
 
   function onInputKey(e: React.KeyboardEvent<HTMLInputElement>) {
     if (e.key === 'Escape') {
@@ -234,7 +361,7 @@ export function SearchBar({ onGoToPage }: Props = {}) {
           className="field border-0 border-b border-rule"
           style={{ borderRadius: 0 }}
         />
-        <div className="px-3 py-1 border-b border-rule font-mono text-[10px] text-ink-faded flex items-center justify-between">
+        <div className="px-3 py-1 border-b border-rule font-mono text-[10px] text-ink-faded flex items-center justify-between gap-3">
           <span>
             {query.trim().length < 2
               ? 'type at least 2 characters'
@@ -242,8 +369,21 @@ export function SearchBar({ onGoToPage }: Props = {}) {
                 ? 'searching…'
                 : `${hits.length} hit${hits.length === 1 ? '' : 's'}${truncated ? ' (first 200)' : ''}`}
           </span>
+          {pdfStatus.state === 'extracting' && (
+            <span style={{ color: 'var(--color-accent)' }}>
+              indexing original text…
+            </span>
+          )}
+          {pdfStatus.state === 'error' && (
+            <span
+              title={pdfStatus.error ?? ''}
+              style={{ color: 'var(--color-warn)' }}
+            >
+              original-text index failed
+            </span>
+          )}
         </div>
-        <ul className="max-h-[50vh] overflow-y-auto">
+        <ul ref={listRef} className="max-h-[50vh] overflow-y-auto">
           {hits.length === 0 && query.trim().length >= 2 && !loading && (
             <li className="px-3 py-3 font-mono text-[11px] text-ink-faded uppercase tracking-wider">
               No matches
@@ -253,11 +393,17 @@ export function SearchBar({ onGoToPage }: Props = {}) {
             const isCursor = i === cursor;
             const parts = hitParts[i];
             return (
-              // biome-ignore lint: arrow-key controlled cursor — onMouseEnter just mirrors it
+              // biome-ignore lint: arrow-key controlled cursor — onMouseMove just mirrors it
               <li
-                key={`${h.pageId}:${h.elementLine}:${h.elementCol}:${i}`}
+                key={`${h.source}:${h.pageId}:${h.elementLine}:${h.elementCol}:${i}`}
+                data-cursor={isCursor ? 'true' : undefined}
                 onClick={() => goTo(h)}
-                onMouseEnter={() => setCursor(i)}
+                // onMouseMove (not onMouseEnter) so that arrow-key scroll
+                // doesn't fight the cursor: mousemove only fires on real
+                // mouse movement, while mouseenter also fires whenever a
+                // different element ends up under a stationary cursor —
+                // which is exactly what happens when the list scrolls.
+                onMouseMove={() => setCursor(i)}
                 className="px-3 py-2 flex items-start gap-3 cursor-pointer"
                 style={{
                   background: isCursor ? 'var(--color-accent-tint)' : 'transparent',
@@ -271,8 +417,16 @@ export function SearchBar({ onGoToPage }: Props = {}) {
                 </span>
                 <div className="flex-1 min-w-0">
                   <div className="font-mono text-[10px] text-ink-muted mb-0.5 uppercase tracking-wider">
-                    {h.elementTag ? `<${h.elementTag}>` : 'jsx'}
-                    <span className="numeric"> · L{h.elementLine}</span>
+                    {h.source === 'original' ? (
+                      <span style={{ color: 'var(--color-accent)' }}>
+                        from PDF original
+                      </span>
+                    ) : (
+                      <>
+                        {h.elementTag ? `<${h.elementTag}>` : 'jsx'}
+                        <span className="numeric"> · L{h.elementLine}</span>
+                      </>
+                    )}
                   </div>
                   <div className="font-body text-[13px] text-ink break-words leading-snug">
                     {parts.before}
