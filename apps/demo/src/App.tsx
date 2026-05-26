@@ -1,14 +1,16 @@
-import { Suspense, lazy, useEffect, useMemo } from 'react';
+import { Suspense, lazy, useCallback, useEffect, useMemo, useRef } from 'react';
 import {
   DocChat,
   DocProvider,
   Inspector,
+  JumpBackPill,
   PageJumper,
   PageNav,
   PageThumbStrip,
   SearchBar,
   ThemeToggle,
   useDocRoute,
+  useJumpStack,
   useKeyboardNav,
 } from '@interlinear/core';
 import type { DocRoutePatch } from '@interlinear/core';
@@ -99,6 +101,21 @@ function DocView({
     onGo: (next) => go({ pageId: next }),
   });
 
+  // Cross-reference navigation history. SearchBar routes through
+  // xrefJump so each hit-pick / auto-jump records the page being left;
+  // any other navigation (arrow keys, PageNav, PageJumper, …) goes
+  // through plain `go` and clears the chain.
+  // `go` from useDocRoute isn't memoized, so we stabilize it through a
+  // ref to keep xrefJump/pop referentially stable (otherwise
+  // JumpBackPill's Backspace listener would reattach every render).
+  const goRef = useRef(go);
+  goRef.current = go;
+  const stableGo = useCallback((id: string) => goRef.current({ pageId: id }), []);
+  const { stack, xrefJump, pop } = useJumpStack({
+    currentPageId: currentId,
+    go: stableGo,
+  });
+
   const Page = useMemo(
     () => (currentId ? lazy(() => doc.loadPage(currentId)) : null),
     [doc, currentId],
@@ -166,9 +183,10 @@ function DocView({
           currentId={currentId}
           onGo={(id) => go({ pageId: id })}
         />
-        {import.meta.env.DEV && <SearchBar onGoToPage={(id) => go({ pageId: id })} />}
+        {import.meta.env.DEV && <SearchBar onGoToPage={xrefJump} />}
         {import.meta.env.DEV && <DocChat />}
         {import.meta.env.DEV && <Inspector />}
+        <JumpBackPill stack={stack} onPop={pop} />
       </div>
     </DocProvider>
   );
