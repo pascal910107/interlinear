@@ -303,7 +303,14 @@ export function Inspector() {
 
     function onClick(e: MouseEvent) {
       if (inPanel(e.target)) return;
-      const cur = pickAncestorWithSrc(e.target as HTMLElement | null);
+      // XrefScan wraps quoted text in <button.xref-link> buttons that
+      // dispatch their own 'interlinear:search' event for click-to-jump.
+      // Inspector listens in capture phase, so without this opt-out we'd
+      // preventDefault/stopPropagation the click before the button's own
+      // onClick runs and the popup would open instead of jumping.
+      const target = e.target as HTMLElement | null;
+      if (target?.closest?.('.xref-link')) return;
+      const cur = pickAncestorWithSrc(target);
 
       // Popup open → any click outside it closes, unless it's on the currently
       // selected element (so accidental clicks within the highlight don't dismiss).

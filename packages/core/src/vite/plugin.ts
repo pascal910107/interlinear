@@ -4,6 +4,7 @@ import path from 'node:path';
 import fg from 'fast-glob';
 import type { Plugin, ViteDevServer } from 'vite';
 import type { InterlinearConfig } from '../config';
+import { loadDocConfig } from '../editing/load-doc-config';
 
 export type InterlinearPluginOptions = {
   /** Workspace root (the app folder that holds the docs/ directory). */
@@ -37,22 +38,6 @@ type Doc = {
   pagesRoot: string;
   pages: DocPage[];
 };
-
-async function loadDocConfig(dir: string): Promise<InterlinearConfig | null> {
-  const candidates = ['interlinear.config.ts', 'interlinear.config.js'];
-  for (const c of candidates) {
-    const fp = path.resolve(dir, c);
-    if (!existsSync(fp)) continue;
-    try {
-      const mod = await import('bundle-require');
-      const { mod: loaded } = await mod.bundleRequire({ filepath: fp });
-      return (loaded as { default?: InterlinearConfig }).default ?? (loaded as InterlinearConfig);
-    } catch (e) {
-      console.warn(`[interlinear] failed to load ${fp}:`, e);
-    }
-  }
-  return null;
-}
 
 async function findDocs(docsRoot: string, pagesDir: string): Promise<Doc[]> {
   if (!existsSync(docsRoot)) return [];

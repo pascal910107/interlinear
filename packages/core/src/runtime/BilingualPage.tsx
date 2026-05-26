@@ -1,4 +1,5 @@
 import type { ReactNode } from 'react';
+import { scanChildren } from './XrefScan';
 
 type Props = {
   originalSrc: string;
@@ -45,7 +46,7 @@ export function BilingualPage({
         </div>
 
         <div className="bg-surface border border-ink flex flex-col flex-1">
-          <div className="px-7 py-8 flex-1">{children}</div>
+          <div className="px-7 py-8 flex-1">{scanChildren(children)}</div>
 
           {showFooter && (
             <footer className="px-7 py-2 border-t border-rule font-mono text-[10px] tracking-[0.08em] uppercase text-ink-faded flex items-baseline gap-4">
