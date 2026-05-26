@@ -304,11 +304,23 @@ export function Inspector() {
     function onClick(e: MouseEvent) {
       if (inPanel(e.target)) return;
       const cur = pickAncestorWithSrc(e.target as HTMLElement | null);
-      if (!cur) {
-        setSelected(null);
-        setSelectedRect(null);
+
+      // Popup open → any click outside it closes, unless it's on the currently
+      // selected element (so accidental clicks within the highlight don't dismiss).
+      if (selected) {
+        const onSelected =
+          !!cur && sameIdentity(readAttrs(cur, fileSet), selected.identity);
+        if (!onSelected) {
+          e.preventDefault();
+          e.stopPropagation();
+          setSelected(null);
+          setSelectedRect(null);
+        }
         return;
       }
+
+      // No popup → open one on src elements.
+      if (!cur) return;
       const snap = snapshotAnchor(cur, fileSet);
       if (!snap) return;
       e.preventDefault();
@@ -340,6 +352,15 @@ export function Inspector() {
       window.removeEventListener('keydown', onKey, true);
     };
   }, [selected, fileSet]);
+
+  useEffect(() => {
+    if (!hoverAnchor) return;
+    const prev = document.body.style.cursor;
+    document.body.style.cursor = 'pointer';
+    return () => {
+      document.body.style.cursor = prev;
+    };
+  }, [hoverAnchor]);
 
   useEffect(() => {
     if (!toast) return;
