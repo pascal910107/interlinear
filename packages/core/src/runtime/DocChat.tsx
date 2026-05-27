@@ -1,5 +1,5 @@
 /// <reference path="../vite/client.d.ts" />
-import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
+import { type ReactNode, useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { useDoc } from './DocContext';
 
 type Entry = {
@@ -21,6 +21,75 @@ function isTypingTarget(el: EventTarget | null): boolean {
   const tag = el.tagName;
   if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return true;
   return el.isContentEditable;
+}
+
+// Minimal markdown renderer for the agent's answers. Supports the
+// subset the ask-doc skill emits: paragraphs separated by blank lines,
+// `- ` bullet lists, **bold**, and `code`. Anything else falls through
+// as plain text. We avoid pulling in react-markdown for one dev-only
+// panel.
+function renderInline(text: string, keyPrefix: string): ReactNode[] {
+  const parts: ReactNode[] = [];
+  const re = /\*\*([^*]+)\*\*|`([^`]+)`/g;
+  let last = 0;
+  let m: RegExpExecArray | null;
+  let i = 0;
+  while ((m = re.exec(text)) !== null) {
+    if (m.index > last) parts.push(text.slice(last, m.index));
+    if (m[1] !== undefined) {
+      parts.push(<strong key={`${keyPrefix}-b${i}`}>{m[1]}</strong>);
+    } else if (m[2] !== undefined) {
+      parts.push(
+        <code
+          key={`${keyPrefix}-c${i}`}
+          className="font-mono text-[12px]"
+          style={{ color: 'var(--color-accent)' }}
+        >
+          {m[2]}
+        </code>,
+      );
+    }
+    last = m.index + m[0].length;
+    i++;
+  }
+  if (last < text.length) parts.push(text.slice(last));
+  return parts;
+}
+
+function MarkdownAnswer({ text }: { text: string }) {
+  // Split into blocks on blank lines, then within each block detect
+  // whether it's a bullet list (every line starts with `- `) or a
+  // paragraph. Single newlines inside a paragraph become spaces.
+  const blocks = text.split(/\n\s*\n/);
+  return (
+    <>
+      {blocks.map((raw, bi) => {
+        const block = raw.trim();
+        if (!block) return null;
+        const lines = block.split('\n');
+        const isList = lines.every((l) => /^\s*-\s+/.test(l));
+        if (isList) {
+          return (
+            <ul
+              key={bi}
+              className="list-disc pl-5 mb-2 last:mb-0 text-ink leading-relaxed"
+            >
+              {lines.map((l, li) => (
+                <li key={li}>
+                  {renderInline(l.replace(/^\s*-\s+/, ''), `b${bi}l${li}`)}
+                </li>
+              ))}
+            </ul>
+          );
+        }
+        return (
+          <p key={bi} className="mb-2 last:mb-0 text-ink leading-relaxed">
+            {renderInline(block.replace(/\n/g, ' '), `b${bi}`)}
+          </p>
+        );
+      })}
+    </>
+  );
 }
 
 function formatTime(iso: string): string {
@@ -371,8 +440,8 @@ export function DocChat() {
                       <div className="font-mono text-[10px] uppercase tracking-wider mb-1" style={{ color: 'var(--color-ok)' }}>
                         Answer · {e.answeredAt ? formatTime(e.answeredAt) : ''}
                       </div>
-                      <div className="font-body text-[13px] text-ink leading-relaxed break-words whitespace-pre-wrap">
-                        {e.answer}
+                      <div className="font-body text-[13px] text-ink leading-relaxed break-words">
+                        <MarkdownAnswer text={e.answer ?? ''} />
                       </div>
                     </>
                   ) : (
