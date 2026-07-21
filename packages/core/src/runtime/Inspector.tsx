@@ -1,6 +1,15 @@
 /// <reference path="../vite/client.d.ts" />
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
-import { useDoc } from './DocContext';
+import { useCurrentPageId, useDoc } from './DocContext';
+
+type InspectorProps = {
+  /**
+   * Navigate to another page through the app's navigation funnel (same
+   * callback SearchBar receives). When omitted, "Goto" falls back to writing
+   * the location hash directly.
+   */
+  onGoToPage?: (pageId: string) => void;
+};
 
 type Identity = { file: string; line: number; col: number };
 
@@ -70,9 +79,11 @@ function sameIdentity(a: Identity | null, b: Identity | null): boolean {
   return a.file === b.file && a.line === b.line && a.col === b.col;
 }
 
-export function Inspector() {
+export function Inspector({ onGoToPage }: InspectorProps = {}) {
   const doc = useDoc();
-  const { pageFiles, currentPageId, id: docId } = doc;
+  const { pageFiles, id: docId } = doc;
+  const currentPageId = useCurrentPageId();
+  const gotoGenRef = useRef(0);
 
   // Build a stable map/set of valid (pageId → file) pairs from the doc.
   const fileToPageId = useMemo(() => {
@@ -175,8 +186,13 @@ export function Inspector() {
 
   function gotoComment(c: PageComment) {
     setCommentsOpen(false);
+    // Cancel any in-flight retry chain from a previous goto, so a slow cold
+    // page can't hijack the view after the user has moved on (pages lazy-load
+    // on demand under the continuous scroller).
+    const myGen = ++gotoGenRef.current;
     const onCurrentPage = currentPageId === c.pageId || pageEntries.length === 1;
     const finish = (attempt = 0): void => {
+      if (myGen !== gotoGenRef.current) return; // superseded by a newer goto
       if (c.elementLine == null || c.elementCol == null) return;
       const el = findByIdentity({
         file: c.file,
@@ -199,7 +215,12 @@ export function Inspector() {
       }
     };
     if (!onCurrentPage) {
-      window.location.hash = `#/d/${encodeURIComponent(docId)}/p/${encodeURIComponent(c.pageId)}`;
+      // Route through the app's navigation funnel (replaceState-based) rather
+      // than assigning location.hash directly, which would push a stray history
+      // entry and bypass the scroller's suppression handling.
+      if (onGoToPage) onGoToPage(c.pageId);
+      else
+        window.location.hash = `#/d/${encodeURIComponent(docId)}/p/${encodeURIComponent(c.pageId)}`;
       finish(0);
     } else {
       finish(0);
@@ -241,8 +262,19 @@ export function Inspector() {
       if (!cur) return cur;
       const el = cur.el.isConnected ? cur.el : findByIdentity(cur.identity);
       if (!el) {
+        // Under the continuous scroller only a few pages are mounted at once, so
+        // the selected element's page can be virtualized *out* of the DOM while
+        // the user scrolls to compare context. That must NOT drop the selection
+        // (which would silently discard an unsaved text/note draft). Only clear
+        // when the page IS mounted but the element is genuinely gone from source;
+        // if the page div isn't mounted, keep the selection + drafts and just
+        // hide the overlay until it scrolls back in and re-resolves.
+        const pageId = fileToPageId.get(cur.identity.file);
+        const pageMounted =
+          pageId != null &&
+          document.querySelector(`[data-page-id="${pageId}"]`) != null;
         setSelectedRect(null);
-        return null;
+        return pageMounted ? null : cur;
       }
       const nextText = readEditableText(el);
       setSelectedRect(el.getBoundingClientRect());
@@ -254,7 +286,7 @@ export function Inspector() {
         editableText: nextText,
       };
     });
-  }, []);
+  }, [fileToPageId]);
 
   useEffect(() => {
     refreshSelectedRect();

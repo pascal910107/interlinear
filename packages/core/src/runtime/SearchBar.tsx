@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { useDoc } from './DocContext';
+import { useCurrentPageId, useDoc } from './DocContext';
 
 type Hit = {
   docId: string;
@@ -66,7 +66,8 @@ function flashElement(el: HTMLElement): void {
  * component renders nothing when `import.meta.env.DEV` is false.
  */
 export function SearchBar({ onGoToPage }: Props = {}) {
-  const { id: docId, currentPageId } = useDoc();
+  const { id: docId } = useDoc();
+  const currentPageId = useCurrentPageId();
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState('');
   const [hits, setHits] = useState<Hit[]>([]);
@@ -208,18 +209,25 @@ export function SearchBar({ onGoToPage }: Props = {}) {
     };
   }, [open, docId, pdfStatus.state]);
 
+  const goToGenRef = useRef(0);
   const goTo = useCallback(
     (h: Hit) => {
       close();
+      // Cancel any in-flight retry/scroll chain from a previous goTo, so a slow
+      // cold-page chunk can't hijack the viewport after the user has already
+      // navigated elsewhere (pages now lazy-load on demand under the continuous
+      // scroller, so a retry loop can outlive its relevance).
+      const myGen = ++goToGenRef.current;
       const onCurrentPage = currentHashPageId() === h.pageId;
       const finish = (attempt = 0): void => {
+        if (myGen !== goToGenRef.current) return; // superseded by a newer navigation
         // Original-source hits have no element coords — they were matched
-        // against the PDF's plain text, not the JSX. Just scroll to top
-        // and let the user line up the translation with the PNG.
-        if (h.source === 'original') {
-          window.scrollTo({ top: 0, behavior: 'smooth' });
-          return;
-        }
+        // against the PDF's plain text, not the JSX. onGoToPage below already
+        // scrolled the target page to the top (with header clearance), so we're
+        // done. (Previously this did window.scrollTo({top:0}); under the
+        // window-scrolled continuous reader that jumps to page 1, not the
+        // target page.)
+        if (h.source === 'original') return;
         const el = findByIdentity(h.file, h.elementLine, h.elementCol);
         if (!el) {
           if (attempt < 20) {
