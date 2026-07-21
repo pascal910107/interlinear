@@ -64,6 +64,14 @@ type Hit = {
    *                   heading was translated and only survives in the PDF.
    */
   source: 'translation' | 'original';
+  /**
+   * Whether the match looks like a section heading (the canonical target a
+   * cross-reference points at) or ordinary body text. Drives the client's
+   * confident auto-jump: a unique "heading" hit wins. For translation hits
+   * this is the JSX tag (h1-h6); for original hits it's inferred from the
+   * line the match sits on (see classifyOriginalLine).
+   */
+  kind: 'heading' | 'body';
 };
 
 function makeSnippet(
@@ -195,15 +203,17 @@ function searchPageSource(
         if (!seen.has(key)) {
           seen.add(key);
           const snip = makeSnippet(text, origStart, origLen);
+          const tag = elementTag(el);
           hits.push({
             docId,
             pageId,
             file,
             elementLine: loc.line,
             elementCol: loc.column,
-            elementTag: elementTag(el),
+            elementTag: tag,
             ...snip,
             source: 'translation',
+            kind: tag != null && /^h[1-6]$/i.test(tag) ? 'heading' : 'body',
           });
         }
       }
@@ -214,17 +224,58 @@ function searchPageSource(
   return hits;
 }
 
-// Table-of-contents lines look like "Section title . . . . . . . . 42".
-// They almost always match every heading-shaped query, which buries the
-// real target page and breaks auto-jump (the unique off-page hit). Detect
-// the dot-leader pattern around the matched span and drop those hits.
+// Table-of-contents lines look like "Section title . . . . . . . . 42" or
+// "Section title          42". They match every heading-shaped query, which
+// buries the real target page and breaks auto-jump. Detected via a dot-leader
+// run or a "title<gap>page-number" trailing on the line — never a jump target.
 const TOC_LEADER_RE = /(?:\.\s+){4,}|(?:\s+\.){4,}/;
+const TOC_TRAILING_PAGENO_RE = /(?:[ \t]{2,}|\t)\d{1,4}$/;
+
+// A section heading sits on its own line, optionally behind a section number
+// ("5.2", "Chapter 5", "Appendix A."). Strip that prefix (and any trailing
+// punctuation) so we can ask "is this line *just* the title?".
+const SECTION_PREFIX_RE =
+  /^(?:chapter|section|appendix|part)?\s*\d+(?:[.\-]\d+)*[.)]?\s+/i;
+
+// Pull the full source line containing index `idx` out of the raw page text.
+// PyMuPDF's "text" extraction preserves newlines between blocks, so a line is
+// a meaningful unit here.
+function lineAround(text: string, idx: number): string {
+  const start = text.lastIndexOf('\n', idx - 1) + 1;
+  let end = text.indexOf('\n', idx);
+  if (end === -1) end = text.length;
+  return text.slice(start, end);
+}
+
+// Classify the line a match landed on, relative to the (normalized, lowercase)
+// query:
+//   "toc"     — dot-leader or trailing page number; never a jump target.
+//   "heading" — the line is essentially just the title; the canonical section
+//               a cross-reference wants to land on.
+//   "body"    — the phrase is embedded in running prose.
+function classifyOriginalLine(
+  line: string,
+  qLower: string,
+): 'toc' | 'heading' | 'body' {
+  const trimmed = line.trim();
+  if (TOC_LEADER_RE.test(line) || TOC_TRAILING_PAGENO_RE.test(trimmed)) {
+    return 'toc';
+  }
+  const core = trimmed
+    .replace(SECTION_PREFIX_RE, '')
+    .replace(/[.,:;)\]]+$/, '')
+    .trim()
+    .replace(/\s+/g, ' ')
+    .toLowerCase();
+  return core === qLower ? 'heading' : 'body';
+}
 
 // Search the plain text of one PDF page for the query (same whitespace-
 // tolerant, case-insensitive match as the JSXText scanner). Original-text
 // hits have no JSX element coords — clicking jumps to the page top so the
 // user can use the rendered translation + the original PNG to find the
-// section themselves.
+// section themselves. At most one hit per page: prefer a heading-like line
+// over a body mention, and skip table-of-contents lines entirely.
 function searchOriginalText(
   pageText: string,
   q: string,
@@ -236,25 +287,30 @@ function searchOriginalText(
   const qLower = qNorm.toLowerCase();
   const { normalized, mapping } = normalizeWhitespace(pageText);
   const lower = normalized.toLowerCase();
-  const hits: Hit[] = [];
+  let best: {
+    origStart: number;
+    origLen: number;
+    kind: 'heading' | 'body';
+  } | null = null;
   let nIdx = lower.indexOf(qLower);
   while (nIdx >= 0) {
     const origStart = mapping[nIdx];
     const origEnd = mapping[nIdx + qLower.length];
     const origLen = origEnd - origStart;
-    // Look at the ~120 chars surrounding the match on the original text
-    // (not the cleaned snippet — we need the raw spacing). If it carries
-    // a ToC dot-leader, skip and keep looking later in the page for a
-    // body hit.
-    const ctxStart = Math.max(0, origStart - 60);
-    const ctxEnd = Math.min(pageText.length, origStart + origLen + 60);
-    const context = pageText.slice(ctxStart, ctxEnd);
-    if (TOC_LEADER_RE.test(context)) {
-      nIdx = lower.indexOf(qLower, nIdx + Math.max(1, qLower.length));
-      continue;
+    const cls = classifyOriginalLine(lineAround(pageText, origStart), qLower);
+    if (cls === 'heading') {
+      best = { origStart, origLen, kind: 'heading' };
+      break; // best possible on this page — stop scanning.
     }
-    const snip = makeSnippet(pageText, origStart, origLen);
-    hits.push({
+    if (cls === 'body' && !best) {
+      best = { origStart, origLen, kind: 'body' };
+    }
+    nIdx = lower.indexOf(qLower, nIdx + Math.max(1, qLower.length));
+  }
+  if (!best) return [];
+  const snip = makeSnippet(pageText, best.origStart, best.origLen);
+  return [
+    {
       docId,
       pageId,
       file: '',
@@ -263,12 +319,9 @@ function searchOriginalText(
       elementTag: null,
       ...snip,
       source: 'original',
-    });
-    // One hit per page from the original is plenty — additional hits on
-    // the same page would all jump to the same top-of-page target.
-    break;
-  }
-  return hits;
+      kind: best.kind,
+    },
+  ];
 }
 
 export type SearchApiOptions = {

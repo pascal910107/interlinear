@@ -13,6 +13,8 @@ type Hit = {
   snippetMatchLength: number;
   /** "translation" — JSXText hit with element coords. "original" — PDF text, no coords. */
   source: 'translation' | 'original';
+  /** "heading" — a section title (the canonical cross-reference target). */
+  kind: 'heading' | 'body';
 };
 
 type PdfStatus = {
@@ -270,11 +272,15 @@ export function SearchBar({ onGoToPage }: Props = {}) {
     }
   }, [cursor]);
 
-  // Auto-jump triggered by an XRef click. Prioritized rules over off-page hits:
-  //   1. Exactly one is a section heading (h1-h4) → that's the canonical
-  //      target. Sibling references quoting the same phrase get filtered.
-  //   2. Otherwise, exactly one off-page hit total → jump to it.
-  //   3. Anything else → show the picker (ambiguous, let the user decide).
+  // Auto-jump triggered by an XRef click. We only jump when confident; any
+  // genuine ambiguity falls through to the picker so the user decides (and
+  // never lands somewhere surprising like a table-of-contents page).
+  //   1. Exactly one heading-kind hit off-page → the canonical section. The
+  //      backend marks both translated <h1-h6> and heading-like lines in the
+  //      PDF original (the usual case: the English title was translated away
+  //      and only survives in the original), so this fires across languages.
+  //   2. No headings but exactly one off-page hit total → the only candidate.
+  //   3. Anything else (0, or 2+ equally-good targets) → show the picker.
   // autoJumpRef is cleared after evaluation so subsequent typing in the
   // prefilled input doesn't keep re-jumping.
   useEffect(() => {
@@ -282,14 +288,12 @@ export function SearchBar({ onGoToPage }: Props = {}) {
     if (loading) return;
     const offPage = hits.filter((h) => h.pageId !== currentPageId);
     autoJumpRef.current = false;
-    const headings = offPage.filter(
-      (h) => h.elementTag != null && /^h[1-4]$/.test(h.elementTag),
-    );
+    const headings = offPage.filter((h) => h.kind === 'heading');
     if (headings.length === 1) {
       goTo(headings[0]);
       return;
     }
-    if (offPage.length === 1) {
+    if (headings.length === 0 && offPage.length === 1) {
       goTo(offPage[0]);
     }
   }, [hits, loading, currentPageId, goTo]);
@@ -419,7 +423,9 @@ export function SearchBar({ onGoToPage }: Props = {}) {
                   <div className="font-mono text-[10px] text-ink-muted mb-0.5 uppercase tracking-wider">
                     {h.source === 'original' ? (
                       <span style={{ color: 'var(--color-accent)' }}>
-                        from PDF original
+                        {h.kind === 'heading'
+                          ? 'section heading · PDF original'
+                          : 'from PDF original'}
                       </span>
                     ) : (
                       <>

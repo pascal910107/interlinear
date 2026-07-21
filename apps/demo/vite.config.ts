@@ -50,7 +50,12 @@ export default defineConfig(({ command }) => {
         : []),
     ],
     server: {
+      // Pin to IPv4 so a second `pnpm dev` reliably sees 5173 as taken and
+      // auto-increments (5174, 5175, …) instead of silently binding the
+      // IPv6 [::1]:5173 socket and "stealing" the port from the running one.
+      host: '127.0.0.1',
       port: config.port ?? 5173,
+      // strictPort stays false (Vite default) so it moves to the next free port.
     },
   };
 });
