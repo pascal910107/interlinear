@@ -45,7 +45,7 @@ visual alignment over prose elegance.
 - Identifiers: function names, type names, struct/macro names,
   field names, enum values.
 - Register names, hex values, numeric literals, units (ms, MHz, V, KB).
-- Product/chip names, model numbers (e.g. MCU, ARM, USB, Cortex-M).
+- Product/chip names, model numbers (e.g. ARM, USB, Cortex-M).
 - Acronyms: UART, SPI, I2C, DMA, ioctl, sysctl, MMIO, IRQ, …
 - File paths, command lines, env-var names.
 - `[[FIGURE_N]]` markers — see "Figure handling" below.
