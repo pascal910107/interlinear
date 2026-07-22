@@ -14,7 +14,7 @@
   <body>
     <script>
       // Apply stored theme before paint to avoid flash-of-light. Same
-      // storage key + values as @interlinear/core's useTheme().
+      // storage key + values as interlinear's useTheme().
       try {
         var t = localStorage.getItem('interlinear:theme');
         if (t === 'dark' || t === 'light') document.body.dataset.theme = t;

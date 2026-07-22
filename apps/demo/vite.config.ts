@@ -12,7 +12,7 @@ import {
   commentsApiEndpoint,
   searchApiEndpoint,
   docQaApiEndpoint,
-} from '@interlinear/core/vite';
+} from 'interlinear/vite';
 
 import config from './interlinear.config';
 
@@ -20,17 +20,19 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 const projectRoot = resolve(__dirname);
 const docsRoot = resolve(projectRoot, config.docsDir ?? 'docs');
 
-// Dev-only pieces (injectSourceAttrs adds inspector hooks to JSX; the
-// __apply_* / __list_comments / __search / __doc_qa endpoints back the
-// inspector, search bar, and DocChat via the dev server). Production
-// builds ship a static reader — none of these are useful then.
+// injectSourceAttrs stamps data-src-{file,line,col} onto every JSX element.
+// It runs in BOTH dev and prod: the inspector reads those attrs in dev, and
+// the static reader's search uses them to resolve a hit back to its DOM node
+// and scroll/flash it. The __apply_* / __list_comments / __search / __doc_qa
+// endpoints stay dev-only — the prod reader is static (search runs off a
+// prebuilt per-doc index, no server).
 export default defineConfig(({ command }) => {
   const isDev = command === 'serve';
   return {
     plugins: [
       react({
         babel: {
-          plugins: isDev ? [[injectSourceAttrs, { root: docsRoot }]] : [],
+          plugins: [[injectSourceAttrs, { root: docsRoot }]],
         },
       }),
       tailwindcss(),

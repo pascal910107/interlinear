@@ -1,4 +1,4 @@
-import type { InterlinearConfig } from '@interlinear/core/config';
+import type { InterlinearConfig } from 'interlinear/config';
 
 const config: InterlinearConfig = {
   title: 'Example Doc',

@@ -10,7 +10,7 @@ importers:
 
   apps/demo:
     dependencies:
-      '@interlinear/core':
+      interlinear:
         specifier: workspace:*
         version: link:../../packages/core
       react:

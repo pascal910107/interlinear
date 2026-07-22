@@ -13,8 +13,8 @@ import {
   useDocRoute,
   useJumpStack,
   useKeyboardNav,
-} from '@interlinear/core';
-import type { DocRoutePatch, PageScrollerHandle } from '@interlinear/core';
+} from 'interlinear';
+import type { DocRoutePatch, PageScrollerHandle } from 'interlinear';
 import { docs, type InterlinearDoc } from 'virtual:interlinear/docs';
 
 function Home({ onPick }: { onPick: (docId: string) => void }) {
@@ -295,7 +295,9 @@ function DocView({
           currentId={currentId}
           onGo={(id) => navigateTo(id, { push: true })}
         />
-        {import.meta.env.DEV && <SearchBar onGoToPage={xrefJump} />}
+        {/* Search ships in the static reader too (client-side index). DocChat
+            and Inspector are authoring tools and stay dev-only. */}
+        <SearchBar onGoToPage={xrefJump} />
         {import.meta.env.DEV && <DocChat />}
         {import.meta.env.DEV && <Inspector onGoToPage={xrefJump} />}
         <JumpBackPill stack={stack} onPop={pop} />

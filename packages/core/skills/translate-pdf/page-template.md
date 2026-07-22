@@ -72,7 +72,7 @@ file's shape; the classes below are the only ones you should use.
 ### Wrapper
 
 ```tsx
-import { BilingualPage } from '@interlinear/core';
+import { BilingualPage } from 'interlinear';
 
 <BilingualPage
   originalSrc="/<docId>/page-<NNNN>.png"

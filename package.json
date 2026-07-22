@@ -5,9 +5,9 @@
   "type": "module",
   "packageManager": "pnpm@10.28.2",
   "scripts": {
-    "build": "pnpm -F @interlinear/core build",
+    "build": "pnpm -F interlinear build",
     "dev": "pnpm build && pnpm --filter @interlinear/demo dev",
-    "dev:watch": "pnpm -r --parallel --filter @interlinear/core --filter @interlinear/demo dev",
+    "dev:watch": "pnpm -r --parallel --filter interlinear --filter @interlinear/demo dev",
     "typecheck": "pnpm build && pnpm -r --parallel run typecheck"
   },
   "engines": {

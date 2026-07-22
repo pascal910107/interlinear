@@ -1,4 +1,4 @@
-import { BilingualPage } from '@interlinear/core';
+import { BilingualPage } from 'interlinear';
 
 const TD = 'border border-ink/40 px-3 py-2 align-top text-[13px] text-ink';
 const TD_MONO = 'border border-ink/40 px-3 py-2 align-top font-mono text-[12.5px] text-ink';

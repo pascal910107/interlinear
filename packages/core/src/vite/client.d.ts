@@ -1,5 +1,5 @@
 // Ambient types for interlinear virtual modules. Apps include this via
-// `/// <reference types="@interlinear/core/vite/client" />` or by adding it
+// `/// <reference types="interlinear/vite/client" />` or by adding it
 // to tsconfig's `types`.
 
 declare module 'virtual:interlinear/docs' {

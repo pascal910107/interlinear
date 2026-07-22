@@ -1,21 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useCurrentPageId, useDoc } from './DocContext';
-
-type Hit = {
-  docId: string;
-  pageId: string;
-  file: string;
-  elementLine: number;
-  elementCol: number;
-  elementTag: string | null;
-  snippet: string;
-  snippetMatchStart: number;
-  snippetMatchLength: number;
-  /** "translation" — JSXText hit with element coords. "original" — PDF text, no coords. */
-  source: 'translation' | 'original';
-  /** "heading" — a section title (the canonical cross-reference target). */
-  kind: 'heading' | 'body';
-};
+import { searchIndex, type Hit, type SearchIndex } from '../editing/search-core';
 
 type PdfStatus = {
   state: 'idle' | 'extracting' | 'ready' | 'error';
@@ -57,13 +42,14 @@ function flashElement(el: HTMLElement): void {
 }
 
 /**
- * Cross-page keyword search. Press `f` (or click the icon in the header)
- * to open. Searches translation JSX text across every page via the dev
- * /__search endpoint; click a hit to jump to its page, scroll the target
- * element into view, and flash an outline around it.
+ * Cross-page keyword search over both the translated JSX text and the
+ * original PDF text. Press `f` (or click a cross-reference) to open; click a
+ * hit to jump to its page, scroll the target element into view, and flash an
+ * outline around it.
  *
- * Dev-only: the static prod build has no /__search endpoint, so this
- * component renders nothing when `import.meta.env.DEV` is false.
+ * Two data sources, one matcher (search-core.ts): in dev it queries the live
+ * /__search endpoint (always reflects unsaved edits); the static production
+ * reader lazy-fetches a prebuilt per-doc index and searches it client-side.
  */
 export function SearchBar({ onGoToPage }: Props = {}) {
   const { id: docId } = useDoc();
@@ -75,6 +61,18 @@ export function SearchBar({ onGoToPage }: Props = {}) {
   const [cursor, setCursor] = useState(0);
   const [loading, setLoading] = useState(false);
   const [pdfStatus, setPdfStatus] = useState<PdfStatus>({ state: 'idle' });
+  // Production reader only: the prebuilt per-doc index, lazy-fetched on first
+  // open. Dev ignores this and uses the live /__search endpoint. SearchBar
+  // remounts per doc (DocView is keyed by doc.id), so this never needs to
+  // reset across docs within one instance.
+  const indexRef = useRef<SearchIndex | null>(null);
+  const [indexState, setIndexState] = useState<
+    'idle' | 'loading' | 'ready' | 'error'
+  >('idle');
+  // Latches true the first time search opens, then triggers the one-shot
+  // index fetch below. Kept separate from `open` so closing the bar mid-load
+  // doesn't cancel (and permanently strand) the in-flight fetch.
+  const [shouldLoadIndex, setShouldLoadIndex] = useState(false);
   // When opened by a cross-reference click, auto-jump to the unique
   // off-page hit (if any) instead of forcing the user to click a result.
   // Cleared after each open so a manual reopen behaves normally.
@@ -128,7 +126,41 @@ export function SearchBar({ onGoToPage }: Props = {}) {
     }
   }, [open]);
 
-  // Debounced fetch.
+  // Arm the index load the first time search opens (prod reader only). Split
+  // from the fetch effect so the fetch's lifecycle isn't tied to `open`.
+  useEffect(() => {
+    if (open) setShouldLoadIndex(true);
+  }, [open]);
+
+  // One-shot fetch of the prebuilt static index. Depends on shouldLoadIndex
+  // (which only ever flips false→true) and docId, NOT on indexState — so
+  // setting indexState here can't re-run the effect and cancel its own fetch.
+  // `alive` guards only against a real unmount / doc switch.
+  useEffect(() => {
+    if (import.meta.env.DEV) return;
+    if (!shouldLoadIndex) return;
+    let alive = true;
+    setIndexState('loading');
+    fetch(`/${encodeURIComponent(docId)}/search-index.json`)
+      .then((res) => {
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        return res.json();
+      })
+      .then((data: SearchIndex) => {
+        if (!alive) return;
+        indexRef.current = data;
+        setIndexState('ready');
+      })
+      .catch(() => {
+        if (alive) setIndexState('error');
+      });
+    return () => {
+      alive = false;
+    };
+  }, [shouldLoadIndex, docId]);
+
+  // Debounced search. Dev queries the live /__search endpoint; the production
+  // reader runs the same matcher over the prebuilt index, client-side.
   useEffect(() => {
     if (!open) return;
     const q = query.trim();
@@ -142,49 +174,64 @@ export function SearchBar({ onGoToPage }: Props = {}) {
     // Auto-jump came from an XRef click. Skip the debounce there — the
     // user already committed and the perceived snappiness matters.
     const debounce = autoJumpRef.current ? 0 : 150;
+    const applyHits = (h: Hit[], tr: boolean) => {
+      setHits(h);
+      setTruncated(tr);
+      setCursor(0);
+      // New hits → reset scroll. The ul element is reused across queries;
+      // without this, the scroll position from a previous search persists
+      // and the freshly-rendered row 0 is rendered mid-list.
+      if (listRef.current) listRef.current.scrollTop = 0;
+    };
     const handle = setTimeout(async () => {
-      try {
-        const res = await fetch(
-          `/__search?q=${encodeURIComponent(q)}&doc=${encodeURIComponent(docId)}`,
-        );
-        const data = (await res.json()) as {
-          ok: boolean;
-          hits?: Hit[];
-          truncated?: boolean;
-          pdfStatus?: Record<string, PdfStatus>;
-        };
-        if (cancelled) return;
-        if (data.ok && data.hits) {
-          setHits(data.hits);
-          setTruncated(Boolean(data.truncated));
-          setCursor(0);
-          // New hits → reset scroll. The ul element is reused across
-          // queries; without this, the scroll position from a previous
-          // search persists and the freshly-rendered row 0 is rendered
-          // mid-list instead of at the top.
-          if (listRef.current) listRef.current.scrollTop = 0;
-        } else {
-          setHits([]);
-          setTruncated(false);
+      if (import.meta.env.DEV) {
+        try {
+          const res = await fetch(
+            `/__search?q=${encodeURIComponent(q)}&doc=${encodeURIComponent(docId)}`,
+          );
+          const data = (await res.json()) as {
+            ok: boolean;
+            hits?: Hit[];
+            truncated?: boolean;
+            pdfStatus?: Record<string, PdfStatus>;
+          };
+          if (cancelled) return;
+          if (data.ok && data.hits) applyHits(data.hits, Boolean(data.truncated));
+          else applyHits([], false);
+          const ps = data.pdfStatus?.[docId];
+          if (ps) setPdfStatus(ps);
+        } catch {
+          if (!cancelled) setHits([]);
+        } finally {
+          if (!cancelled) setLoading(false);
         }
-        const ps = data.pdfStatus?.[docId];
-        if (ps) setPdfStatus(ps);
-      } catch {
-        if (!cancelled) setHits([]);
-      } finally {
-        if (!cancelled) setLoading(false);
+      } else {
+        // Production: run the shared matcher over the static index. If it
+        // hasn't finished loading, stay put — this effect re-runs when
+        // indexState flips to 'ready' (it's in the dependency list).
+        const idx = indexRef.current;
+        if (!idx) {
+          if (!cancelled) setLoading(false);
+          return;
+        }
+        const { hits: h, truncated: tr } = searchIndex(idx, q);
+        if (cancelled) return;
+        applyHits(h, tr);
+        setLoading(false);
       }
     }, debounce);
     return () => {
       cancelled = true;
       clearTimeout(handle);
     };
-  }, [open, query, docId]);
+  }, [open, query, docId, indexState]);
 
   // While indexing is still in flight, poll status so the banner clears
   // without the user having to retype. Cheap — `f` is rare and the loop
-  // self-terminates the moment the index is ready.
+  // self-terminates the moment the index is ready. Dev-only: prod's index
+  // is prebuilt and complete, so there's nothing to poll.
   useEffect(() => {
+    if (!import.meta.env.DEV) return;
     if (!open) return;
     if (pdfStatus.state !== 'extracting') return;
     let cancelled = false;
@@ -338,7 +385,6 @@ export function SearchBar({ onGoToPage }: Props = {}) {
     [hits],
   );
 
-  if (!import.meta.env.DEV) return null;
   if (!open) return null;
 
   return (
@@ -377,16 +423,25 @@ export function SearchBar({ onGoToPage }: Props = {}) {
           <span>
             {query.trim().length < 2
               ? 'type at least 2 characters'
-              : loading
-                ? 'searching…'
-                : `${hits.length} hit${hits.length === 1 ? '' : 's'}${truncated ? ' (first 200)' : ''}`}
+              : !import.meta.env.DEV && indexState !== 'ready'
+                ? indexState === 'error'
+                  ? 'search unavailable'
+                  : 'loading index…'
+                : loading
+                  ? 'searching…'
+                  : `${hits.length} hit${hits.length === 1 ? '' : 's'}${truncated ? ' (first 200)' : ''}`}
           </span>
-          {pdfStatus.state === 'extracting' && (
+          {!import.meta.env.DEV && indexState === 'error' && (
+            <span style={{ color: 'var(--color-warn)' }}>
+              search index failed to load
+            </span>
+          )}
+          {import.meta.env.DEV && pdfStatus.state === 'extracting' && (
             <span style={{ color: 'var(--color-accent)' }}>
               indexing original text…
             </span>
           )}
-          {pdfStatus.state === 'error' && (
+          {import.meta.env.DEV && pdfStatus.state === 'error' && (
             <span
               title={pdfStatus.error ?? ''}
               style={{ color: 'var(--color-warn)' }}

@@ -26,6 +26,26 @@ pnpm dev        # builds core, then starts the demo viewer (default :5173)
 
 Open the printed URL to browse the example doc.
 
+## Publish a shareable reader
+
+```bash
+pnpm --filter @interlinear/demo build   # → apps/demo/dist/
+```
+
+Deploy `apps/demo/dist/` to any static host (Cloudflare Pages, Netlify,
+GitHub Pages, S3+CDN) — there is **no backend or database**. The build:
+
+- renders every page to static JS and copies each doc's `public/` images,
+- emits a per-doc `search-index.json`, so the reader's full-text search
+  (across both the translation and the original PDF text) runs entirely
+  client-side.
+
+The authoring tools (inline editing, DocChat) are dev-only and don't ship in
+the static build. Cross-language search over the *original* text uses the
+`.interlinear/original-text.json` cache — open search once under `pnpm dev`
+(or run the text extractor) before building so that cache exists; without it
+the published index still covers the translated text.
+
 ## Editing skills
 
 Run these from a Claude Code session in this repo:

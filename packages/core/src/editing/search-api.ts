@@ -2,8 +2,6 @@ import { existsSync } from 'node:fs';
 import { readFile } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
-import { parse as babelParse } from '@babel/parser';
-import * as t from '@babel/types';
 import fg from 'fast-glob';
 import type { Plugin } from 'vite';
 import { loadDocConfig } from './load-doc-config';
@@ -12,317 +10,14 @@ import {
   type PdfIndexState,
   type PdfTextIndex,
 } from './pdf-text-index';
-
-const SKIP_KEYS = new Set([
-  'loc',
-  'start',
-  'end',
-  'type',
-  'extra',
-  'leadingComments',
-  'trailingComments',
-  'innerComments',
-]);
-
-function walk(ast: unknown, visit: (n: t.Node, parents: t.Node[]) => void): void {
-  const stack: t.Node[] = [];
-  const recurse = (node: unknown): void => {
-    if (!node || typeof node !== 'object') return;
-    if (Array.isArray(node)) {
-      for (const c of node) recurse(c);
-      return;
-    }
-    const n = node as t.Node;
-    if (typeof n.type !== 'string') return;
-    visit(n, stack);
-    stack.push(n);
-    for (const key of Object.keys(n)) {
-      if (SKIP_KEYS.has(key)) continue;
-      recurse((n as unknown as Record<string, unknown>)[key]);
-    }
-    stack.pop();
-  };
-  recurse(ast);
-}
-
-type Hit = {
-  docId: string;
-  pageId: string;
-  file: string;
-  elementLine: number;
-  elementCol: number;
-  elementTag: string | null;
-  snippet: string;
-  snippetMatchStart: number;
-  snippetMatchLength: number;
-  /**
-   * Where the match was found:
-   *   "translation" — JSXText inside the rendered page (has element coords).
-   *   "original"    — plain text from the source PDF, no element coords;
-   *                   jump scrolls to the page top instead of a specific
-   *                   span. Used for cross-references where the English
-   *                   heading was translated and only survives in the PDF.
-   */
-  source: 'translation' | 'original';
-  /**
-   * Whether the match looks like a section heading (the canonical target a
-   * cross-reference points at) or ordinary body text. Drives the client's
-   * confident auto-jump: a unique "heading" hit wins. For translation hits
-   * this is the JSX tag (h1-h6); for original hits it's inferred from the
-   * line the match sits on (see classifyOriginalLine).
-   */
-  kind: 'heading' | 'body';
-};
-
-function makeSnippet(
-  haystack: string,
-  matchStart: number,
-  matchLen: number,
-): { snippet: string; snippetMatchStart: number; snippetMatchLength: number } {
-  const PAD = 40;
-  const left = haystack.slice(Math.max(0, matchStart - PAD), matchStart);
-  const middle = haystack.slice(matchStart, matchStart + matchLen);
-  const right = haystack.slice(matchStart + matchLen, matchStart + matchLen + PAD);
-  const leftClean = left.replace(/\s+/g, ' ');
-  const middleClean = middle.replace(/\s+/g, ' ');
-  const rightClean = right.replace(/\s+/g, ' ');
-  const leftEllipsis = matchStart > PAD ? '… ' : '';
-  const rightEllipsis = matchStart + matchLen + PAD < haystack.length ? ' …' : '';
-  const snippet = leftEllipsis + leftClean + middleClean + rightClean + rightEllipsis;
-  return {
-    snippet,
-    snippetMatchStart: leftEllipsis.length + leftClean.length,
-    snippetMatchLength: middleClean.length,
-  };
-}
-
-// JSXText preserves source whitespace verbatim — line breaks and indentation
-// between siblings end up inside one text node as "\n        ". A query like
-// "to display the debug message" written with normal single spaces would
-// fail to match across that whitespace run. Build a normalized form that
-// collapses each whitespace run to a single ' ', plus an index map back to
-// the original so we can still produce a faithful snippet.
-function normalizeWhitespace(text: string): {
-  normalized: string;
-  // mapping[i] = original index for normalized index i.
-  // mapping has length normalized.length + 1; the trailing entry is
-  // text.length so a match at the end has a well-defined end-pointer.
-  mapping: number[];
-} {
-  const chars: string[] = [];
-  const mapping: number[] = [];
-  let prevWasSpace = false;
-  for (let i = 0; i < text.length; i++) {
-    const ch = text[i];
-    const isSpace = ch === ' ' || ch === '\t' || ch === '\n' || ch === '\r';
-    if (isSpace) {
-      if (!prevWasSpace) {
-        chars.push(' ');
-        mapping.push(i);
-      }
-      prevWasSpace = true;
-    } else {
-      chars.push(ch);
-      mapping.push(i);
-      prevWasSpace = false;
-    }
-  }
-  mapping.push(text.length);
-  return { normalized: chars.join(''), mapping };
-}
-
-function smallestJsxElement(parents: t.Node[]): t.JSXElement | null {
-  for (let i = parents.length - 1; i >= 0; i--) {
-    const p = parents[i];
-    if (t.isJSXElement(p)) return p;
-  }
-  return null;
-}
-
-function elementTag(el: t.JSXElement): string | null {
-  const name = el.openingElement.name;
-  return name.type === 'JSXIdentifier' ? name.name : null;
-}
-
-function searchPageSource(
-  source: string,
-  q: string,
-  docId: string,
-  pageId: string,
-  file: string,
-): Hit[] {
-  let ast: t.Node;
-  try {
-    ast = babelParse(source, {
-      sourceType: 'module',
-      plugins: ['typescript', 'jsx'],
-      errorRecovery: true,
-    }) as unknown as t.Node;
-  } catch {
-    return [];
-  }
-
-  // Collapse query whitespace too so e.g. a pasted multi-line phrase still
-  // matches the normalized JSXText.
-  const qNorm = q.replace(/\s+/g, ' ').trim();
-  if (qNorm.length === 0) return [];
-  const qLower = qNorm.toLowerCase();
-  const hits: Hit[] = [];
-  const seen = new Set<string>();
-
-  walk(ast, (node, parents) => {
-    let text: string | null = null;
-    if (t.isJSXText(node)) {
-      text = node.value;
-    } else if (t.isStringLiteral(node)) {
-      const parent = parents[parents.length - 1];
-      if (parent && t.isJSXExpressionContainer(parent)) {
-        const grand = parents[parents.length - 2];
-        if (grand && t.isJSXElement(grand)) {
-          text = node.value;
-        }
-      }
-    } else {
-      return;
-    }
-    if (!text) return;
-    if (text.trim() === '') return;
-    const { normalized, mapping } = normalizeWhitespace(text);
-    const lower = normalized.toLowerCase();
-    let nIdx = lower.indexOf(qLower);
-    while (nIdx >= 0) {
-      const el = smallestJsxElement(parents);
-      if (el?.openingElement.loc) {
-        const loc = el.openingElement.loc.start;
-        const origStart = mapping[nIdx];
-        // Last mapping entry is text.length, so this is safe for matches
-        // that run all the way to the end of the normalized form.
-        const origEnd = mapping[nIdx + qLower.length];
-        const origLen = origEnd - origStart;
-        const key = `${loc.line}:${loc.column}:${origStart}`;
-        if (!seen.has(key)) {
-          seen.add(key);
-          const snip = makeSnippet(text, origStart, origLen);
-          const tag = elementTag(el);
-          hits.push({
-            docId,
-            pageId,
-            file,
-            elementLine: loc.line,
-            elementCol: loc.column,
-            elementTag: tag,
-            ...snip,
-            source: 'translation',
-            kind: tag != null && /^h[1-6]$/i.test(tag) ? 'heading' : 'body',
-          });
-        }
-      }
-      nIdx = lower.indexOf(qLower, nIdx + Math.max(1, qLower.length));
-    }
-  });
-
-  return hits;
-}
-
-// Table-of-contents lines look like "Section title . . . . . . . . 42" or
-// "Section title          42". They match every heading-shaped query, which
-// buries the real target page and breaks auto-jump. Detected via a dot-leader
-// run or a "title<gap>page-number" trailing on the line — never a jump target.
-const TOC_LEADER_RE = /(?:\.\s+){4,}|(?:\s+\.){4,}/;
-const TOC_TRAILING_PAGENO_RE = /(?:[ \t]{2,}|\t)\d{1,4}$/;
-
-// A section heading sits on its own line, optionally behind a section number
-// ("5.2", "Chapter 5", "Appendix A."). Strip that prefix (and any trailing
-// punctuation) so we can ask "is this line *just* the title?".
-const SECTION_PREFIX_RE =
-  /^(?:chapter|section|appendix|part)?\s*\d+(?:[.\-]\d+)*[.)]?\s+/i;
-
-// Pull the full source line containing index `idx` out of the raw page text.
-// PyMuPDF's "text" extraction preserves newlines between blocks, so a line is
-// a meaningful unit here.
-function lineAround(text: string, idx: number): string {
-  const start = text.lastIndexOf('\n', idx - 1) + 1;
-  let end = text.indexOf('\n', idx);
-  if (end === -1) end = text.length;
-  return text.slice(start, end);
-}
-
-// Classify the line a match landed on, relative to the (normalized, lowercase)
-// query:
-//   "toc"     — dot-leader or trailing page number; never a jump target.
-//   "heading" — the line is essentially just the title; the canonical section
-//               a cross-reference wants to land on.
-//   "body"    — the phrase is embedded in running prose.
-function classifyOriginalLine(
-  line: string,
-  qLower: string,
-): 'toc' | 'heading' | 'body' {
-  const trimmed = line.trim();
-  if (TOC_LEADER_RE.test(line) || TOC_TRAILING_PAGENO_RE.test(trimmed)) {
-    return 'toc';
-  }
-  const core = trimmed
-    .replace(SECTION_PREFIX_RE, '')
-    .replace(/[.,:;)\]]+$/, '')
-    .trim()
-    .replace(/\s+/g, ' ')
-    .toLowerCase();
-  return core === qLower ? 'heading' : 'body';
-}
-
-// Search the plain text of one PDF page for the query (same whitespace-
-// tolerant, case-insensitive match as the JSXText scanner). Original-text
-// hits have no JSX element coords — clicking jumps to the page top so the
-// user can use the rendered translation + the original PNG to find the
-// section themselves. At most one hit per page: prefer a heading-like line
-// over a body mention, and skip table-of-contents lines entirely.
-function searchOriginalText(
-  pageText: string,
-  q: string,
-  docId: string,
-  pageId: string,
-): Hit[] {
-  const qNorm = q.replace(/\s+/g, ' ').trim();
-  if (qNorm.length === 0) return [];
-  const qLower = qNorm.toLowerCase();
-  const { normalized, mapping } = normalizeWhitespace(pageText);
-  const lower = normalized.toLowerCase();
-  let best: {
-    origStart: number;
-    origLen: number;
-    kind: 'heading' | 'body';
-  } | null = null;
-  let nIdx = lower.indexOf(qLower);
-  while (nIdx >= 0) {
-    const origStart = mapping[nIdx];
-    const origEnd = mapping[nIdx + qLower.length];
-    const origLen = origEnd - origStart;
-    const cls = classifyOriginalLine(lineAround(pageText, origStart), qLower);
-    if (cls === 'heading') {
-      best = { origStart, origLen, kind: 'heading' };
-      break; // best possible on this page — stop scanning.
-    }
-    if (cls === 'body' && !best) {
-      best = { origStart, origLen, kind: 'body' };
-    }
-    nIdx = lower.indexOf(qLower, nIdx + Math.max(1, qLower.length));
-  }
-  if (!best) return [];
-  const snip = makeSnippet(pageText, best.origStart, best.origLen);
-  return [
-    {
-      docId,
-      pageId,
-      file: '',
-      elementLine: 0,
-      elementCol: 0,
-      elementTag: null,
-      ...snip,
-      source: 'original',
-      kind: best.kind,
-    },
-  ];
-}
+import { extractPageSegments } from './search-extract';
+import {
+  matchSegments,
+  searchOriginalText,
+  sortHits,
+  SEARCH_HIT_CAP,
+  type Hit,
+} from './search-core';
 
 export type SearchApiOptions = {
   /** Root containing all docs. */
@@ -331,6 +26,12 @@ export type SearchApiOptions = {
   pagesDir?: string;
 };
 
+// Dev-only live search endpoint. Reads page TSX + the source PDF's plain text
+// on every request so results always reflect unsaved edits. The production
+// reader instead ships a prebuilt static index (build-search-index.ts) and
+// searches it client-side via search-core.ts — both share the exact same
+// matcher (matchSegments / searchOriginalText), so dev and the published site
+// never disagree.
 export function searchApiEndpoint({
   docsRoot,
   pagesDir = 'pages',
@@ -465,50 +166,49 @@ export function searchApiEndpoint({
             return;
           }
           const pages = await listPages(doc);
-          const allHits: Hit[] = [];
+          const translationHits: Hit[] = [];
           await Promise.all(
             pages.map(async ({ docId, pageId, abs, rel }) => {
               try {
                 const source = await readFile(abs, 'utf8');
-                const hits = searchPageSource(source, q, docId, pageId, rel);
-                allHits.push(...hits);
+                const segs = extractPageSegments(source, pageId, rel);
+                translationHits.push(...matchSegments(segs, q, docId));
               } catch {
                 // ignore unreadable page
               }
             }),
           );
 
-          // Also search PDF original text for every doc in scope. Hits
-          // come back with source:'original' and no element coords.
-          // Suppress originals on a page that already has a translation
-          // hit for the same query — translation hits are strictly more
-          // useful (they scroll to the exact span).
+          // Also search PDF original text for the translated pages in scope.
+          // Hits come back with source:'original' and no element coords.
+          // Restrict to pages that actually exist as translated pages (an
+          // untranslated page isn't navigable, so an original hit there would
+          // be a dead link) and suppress originals on a page that already has
+          // a translation hit — translation hits scroll to the exact span.
           const docsInScope = doc
             ? [doc]
             : Array.from(new Set(pages.map((p) => p.docId)));
+          const originalHits: Hit[] = [];
           for (const docId of docsInScope) {
             const pdfPages = pdfIndex.getPages(docId);
             if (!pdfPages) continue;
+            const docPageIds = new Set(
+              pages.filter((p) => p.docId === docId).map((p) => p.pageId),
+            );
             const translatedHitPages = new Set(
-              allHits.filter((h) => h.docId === docId).map((h) => h.pageId),
+              translationHits
+                .filter((h) => h.docId === docId)
+                .map((h) => h.pageId),
             );
             for (const [pageId, text] of Object.entries(pdfPages)) {
+              if (!docPageIds.has(pageId)) continue;
               if (translatedHitPages.has(pageId)) continue;
-              const origHits = searchOriginalText(text, q, docId, pageId);
-              allHits.push(...origHits);
+              originalHits.push(...searchOriginalText(text, q, docId, pageId));
             }
           }
 
-          allHits.sort((a, b) => {
-            if (a.docId !== b.docId) return a.docId < b.docId ? -1 : 1;
-            if (a.pageId !== b.pageId) return a.pageId < b.pageId ? -1 : 1;
-            // Translation hits before originals on the same page (in
-            // practice we suppress same-page duplicates above, so this
-            // only matters across pages).
-            if (a.source !== b.source) return a.source === 'translation' ? -1 : 1;
-            return a.elementLine - b.elementLine;
-          });
-          const capped = allHits.slice(0, 200);
+          const allHits = sortHits([...translationHits, ...originalHits]);
+          const capped = allHits.slice(0, SEARCH_HIT_CAP);
           res.statusCode = 200;
           res.setHeader('content-type', 'application/json');
           res.end(

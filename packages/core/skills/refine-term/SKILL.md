@@ -30,7 +30,7 @@ rendered DOM. It must **not** touch:
   "code too" / "包含 code 區塊".
 
 You can rely on `@babel/parser` (already a dependency of
-`@interlinear/core` via the `apply-comment` / `apply-edit` plugins) to
+`interlinear` via the `apply-comment` / `apply-edit` plugins) to
 produce a proper AST — do not regex-replace the file contents directly.
 
 ## Procedure
@@ -135,7 +135,7 @@ produce a proper AST — do not regex-replace the file contents directly.
 
 - Do not touch anything outside `apps/demo/docs/*/pages/**/index.tsx`.
 - Do not add dependencies — `@babel/parser` and `@babel/traverse` are
-  already in the tree via `@interlinear/core`.
+  already in the tree via `interlinear`.
 - Do not modify any `interlinear.config.ts`, `vite.config.ts`, or any
   file under `packages/core/`.
 - Do not commit. Leave the diff staged-or-not as the user prefers; the

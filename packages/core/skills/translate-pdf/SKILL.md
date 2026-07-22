@@ -360,7 +360,7 @@ pnpm typecheck      # every page must parse and type-check
 
 Then do a quick textual sanity scan across the emitted files:
 
-- Every page imports `BilingualPage` from `@interlinear/core`.
+- Every page imports `BilingualPage` from `interlinear`.
 - Every page wraps content in `<BilingualPage originalSrc="/page-NNNN.png" …>`.
 - No leftover `[[FIGURE_N]]` markers in the TSX (they should be replaced
   by `<figure>` blocks per §6.1).

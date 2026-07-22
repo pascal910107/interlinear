@@ -1,4 +1,4 @@
-@import "@interlinear/core/styles/tokens.css";
+@import "interlinear/styles/tokens.css";
 
 /* Auto-generated safelist of utilities used by per-doc pages under
    apps/demo/docs/. The interlinear vite plugin scans every .tsx file
